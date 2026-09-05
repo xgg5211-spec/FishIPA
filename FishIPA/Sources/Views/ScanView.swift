@@ -27,7 +27,7 @@ struct ScanResult: Identifiable, Hashable {
     let error: String?
 
     var isAvailable: Bool { latency != nil }
-    var displayLatency: String { latency.map { "\($0, specifier: "%.0f") ms" } ?? "失败" }
+    var displayLatency: String { latency.map { String(format: "%.0f ms", $0) } ?? "失败" }
 }
 
 private enum ProbeError: LocalizedError {
@@ -59,7 +59,7 @@ private enum NetworkProbe {
     }
 
     private static func connect(host: NWEndpoint.Host, port: NWEndpoint.Port, parameters: NWParameters, timeout: TimeInterval) async throws {
-        try await withCheckedThrowingContinuation { continuation in
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             let connection = NWConnection(host: host, port: port, using: parameters)
             let lock = NSLock()
             var completed = false
