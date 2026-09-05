@@ -196,7 +196,7 @@ struct ScanView: View {
 
     private func resultRow(_ result: ScanResult, rank: Int) -> some View {
         HStack(spacing: 12) {
-            Text("%02d".formatted(rank)).font(.caption.monospacedDigit().bold()).foregroundStyle(rank < 4 ? .cyan : .white.opacity(0.35)).frame(width: 28)
+            Text(rank < 10 ? "0\(rank)" : "\(rank)").font(.caption.monospacedDigit().bold()).foregroundStyle(rank < 4 ? .cyan : .white.opacity(0.35)).frame(width: 28)
             VStack(alignment: .leading, spacing: 4) {
                 Text(result.address).font(.body.monospaced().weight(.semibold)).foregroundStyle(.white)
                 Text(result.isAvailable ? "连接成功" : (result.error ?? "连接失败")).font(.caption).foregroundStyle(.white.opacity(0.45))
