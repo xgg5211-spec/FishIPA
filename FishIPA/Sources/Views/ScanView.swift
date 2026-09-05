@@ -95,7 +95,7 @@ final class ScanViewModel: ObservableObject {
     @Published private(set) var isScanning = false
     @Published private(set) var scannedCount = 0
     @Published private(set) var totalCount = 0
-    @Published var inputText = Self.defaultAddresses.joined(separator: "\n")
+    @Published var inputText: String
     @Published private(set) var statusMessage = "已载入 Cloudflare 默认节点"
     @Published var mode: ProbeMode = .tls
     @Published var portText = "443"
@@ -115,6 +115,10 @@ final class ScanViewModel: ObservableObject {
         "104.20.0.1", "104.21.0.1", "104.22.0.1", "104.23.0.1",
         "2606:4700:4700::1111", "2606:4700:4700::1001"
     ]
+
+    init() {
+        inputText = Self.defaultAddresses.joined(separator: "\n")
+    }
 
     var availableCount: Int { results.reduce(into: 0) { if $1.isAvailable { $0 += 1 } } }
     var fastestLatency: Int? { results.compactMap(\.latency).min().map { Int($0.rounded()) } }
