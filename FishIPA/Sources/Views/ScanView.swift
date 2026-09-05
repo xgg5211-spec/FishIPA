@@ -25,6 +25,7 @@ struct ScanResult: Identifiable, Hashable {
     let address: String
     let family: AddressFamily
     let latency: Double?
+    let region: String?
     let error: String?
 
     var isAvailable: Bool { latency != nil }
@@ -51,16 +52,18 @@ private enum NetworkProbe {
         }
 
         do {
-            try await connect(host: NWEndpoint.Host(address), port: NWEndpoint.Port(rawValue: port) ?? 443, parameters: parameters, timeout: timeout)
+            let connection = try await connect(host: NWEndpoint.Host(address), port: NWEndpoint.Port(rawValue: port) ?? 443, parameters: parameters, timeout: timeout)
             let elapsed = Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000
-            return ScanResult(id: address, address: address, family: family, latency: elapsed, error: nil)
+            let region = mode == .tls ? try? await traceRegion(connection, timeout: timeout) : nil
+            connection.cancel()
+            return ScanResult(id: address, address: address, family: family, latency: elapsed, region: region ?? nil, error: nil)
         } catch {
-            return ScanResult(id: address, address: address, family: family, latency: nil, error: error.localizedDescription)
+            return ScanResult(id: address, address: address, family: family, latency: nil, region: nil, error: error.localizedDescription)
         }
     }
 
-    private static func connect(host: NWEndpoint.Host, port: NWEndpoint.Port, parameters: NWParameters, timeout: TimeInterval) async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+    private static func connect(host: NWEndpoint.Host, port: NWEndpoint.Port, parameters: NWParameters, timeout: TimeInterval) async throws -> NWConnection {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<NWConnection, Error>) in
             let connection = NWConnection(host: host, port: port, using: parameters)
             let lock = NSLock()
             var completed = false
@@ -70,13 +73,12 @@ private enum NetworkProbe {
                 guard !completed else { lock.unlock(); return }
                 completed = true
                 lock.unlock()
-                connection.cancel()
                 continuation.resume(with: result)
             }
 
             connection.stateUpdateHandler = { state in
                 switch state {
-                case .ready: finish(.success(()))
+                case .ready: finish(.success(connection))
                 case .failed(let error): finish(.failure(error))
                 case .cancelled: finish(.failure(ProbeError.timeout))
                 default: break
@@ -85,6 +87,46 @@ private enum NetworkProbe {
             connection.start(queue: .global(qos: .userInitiated))
             DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + timeout) {
                 finish(.failure(ProbeError.timeout))
+            }
+        }
+    }
+
+    private static func traceRegion(_ connection: NWConnection, timeout: TimeInterval) async throws -> String? {
+        let request = "GET /cdn-cgi/trace HTTP/1.1\r\nHost: speed.cloudflare.com\r\nConnection: close\r\n\r\n"
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<String?, Error>) in
+            let lock = NSLock()
+            var completed = false
+            func finish(_ result: Result<String?, Error>) {
+                lock.lock()
+                guard !completed else { lock.unlock(); return }
+                completed = true
+                lock.unlock()
+                continuation.resume(with: result)
+            }
+            connection.send(content: request.data(using: .utf8), completion: .contentProcessed { error in
+                if let error { finish(.failure(error)); return }
+                var buffer = Data()
+                func receiveMore() {
+                    connection.receive(minimumIncompleteLength: 1, maximumLength: 4096) { content, _, isComplete, error in
+                        if let error { finish(.failure(error)); return }
+                        if let content { buffer.append(content) }
+                        if let text = String(data: buffer, encoding: .utf8), text.contains("\r\n\r\n") {
+                            let values = text.split(whereSeparator: \.isNewline).reduce(into: [String: String]()) { result, line in
+                                let parts = line.split(separator: "=", maxSplits: 1).map(String.init)
+                                if parts.count == 2 { result[parts[0]] = parts[1] }
+                            }
+                            let label = [values["loc"], values["colo"]].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
+                            finish(.success(label.isEmpty ? nil : label))
+                            return
+                        }
+                        if isComplete || buffer.count > 64 * 1024 { finish(.success(nil)); return }
+                        receiveMore()
+                    }
+                }
+                receiveMore()
+            })
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + timeout) {
+                finish(.success(nil))
             }
         }
     }
@@ -426,7 +468,7 @@ struct ScanView: View {
             Text(rank < 10 ? "0\(rank)" : "\(rank)").font(.caption.monospacedDigit().bold()).foregroundStyle(rank < 4 ? .cyan : .white.opacity(0.35)).frame(width: 28)
             VStack(alignment: .leading, spacing: 3) {
                 Text(result.address).font(.body.monospaced().weight(.semibold)).foregroundStyle(.white)
-                Text("\(result.family.rawValue) · \(result.isAvailable ? "\(model.mode.rawValue)成功" : (result.error ?? "失败"))").font(.caption).foregroundStyle(.white.opacity(0.45))
+                Text("\(result.family.rawValue) · \(result.region ?? "地区识别中") · \(result.isAvailable ? "\(model.mode.rawValue)成功" : (result.error ?? "失败"))").font(.caption).foregroundStyle(.white.opacity(0.45))
             }
             Spacer()
             Text(result.displayLatency).font(.subheadline.monospacedDigit().bold()).foregroundStyle(result.isAvailable ? (result.latency! < 100 ? .green : .orange) : .white.opacity(0.35))
