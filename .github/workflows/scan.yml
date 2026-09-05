@@ -1,0 +1,36 @@
+name: Scheduled Cloudflare Scan
+
+on:
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+    inputs:
+      sample_per_network:
+        description: "IPv6 samples per official network"
+        required: false
+        default: "2"
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Cloudflare scan
+        run: |
+          python3 Scripts/cloudflare_scan.py \
+            --sample-per-network "${{ inputs.sample_per_network || '2' }}" \
+            --workers 150 \
+            --timeout 1.5
+
+      - name: Upload scan results
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloudflare-scan-${{ github.run_number }}
+          path: build/results.*
+          retention-days: 14
