@@ -17,7 +17,6 @@ targets:
       - path: FishIPA/Sources
     resources:
       - path: FishIPA/Resources
-    entitlements: FishIPA/FishIPA.entitlements
     info:
       path: FishIPA/Resources/Info.plist
     settings:
