@@ -95,7 +95,8 @@ final class ScanViewModel: ObservableObject {
     @Published private(set) var isScanning = false
     @Published private(set) var scannedCount = 0
     @Published private(set) var totalCount = 0
-    @Published var inputText = ""
+    @Published var inputText = Self.defaultAddresses.joined(separator: "\n")
+    @Published private(set) var statusMessage = "已载入 Cloudflare 默认节点"
     @Published var mode: ProbeMode = .tls
     @Published var portText = "443"
     @Published var concurrencyText = "80"
@@ -106,6 +107,14 @@ final class ScanViewModel: ObservableObject {
 
     private var scanTask: Task<Void, Never>?
     private var scanID = UUID()
+
+    private static let defaultAddresses = [
+        "1.1.1.1", "1.0.0.1", "1.1.1.2", "1.0.0.2",
+        "162.159.36.1", "162.159.46.1", "162.159.192.1", "162.159.193.1",
+        "104.16.0.1", "104.17.0.1", "104.18.0.1", "104.19.0.1",
+        "104.20.0.1", "104.21.0.1", "104.22.0.1", "104.23.0.1",
+        "2606:4700:4700::1111", "2606:4700:4700::1001"
+    ]
 
     var availableCount: Int { results.reduce(into: 0) { if $1.isAvailable { $0 += 1 } } }
     var fastestLatency: Int? { results.compactMap(\.latency).min().map { Int($0.rounded()) } }
@@ -120,8 +129,11 @@ final class ScanViewModel: ObservableObject {
 
     func startScan() {
         stopScan()
-        let addresses = parseAddresses(inputText)
-        guard !addresses.isEmpty else { return }
+        let addresses = parseAddresses(inputText.isEmpty ? Self.defaultAddresses.joined(separator: "\n") : inputText)
+        guard !addresses.isEmpty else {
+            statusMessage = "没有识别到有效 IP，请粘贴 IPv4 或 IPv6 地址"
+            return
+        }
 
         let port = UInt16(portText) ?? 443
         let concurrency = min(max(Int(concurrencyText) ?? 80, 1), 200)
@@ -133,6 +145,7 @@ final class ScanViewModel: ObservableObject {
         scannedCount = 0
         totalCount = addresses.count
         isScanning = true
+        statusMessage = "正在进行 \(selectedMode.rawValue)，共 \(addresses.count) 个地址"
 
         scanTask = Task { [weak self] in
             var pending = addresses
@@ -158,6 +171,7 @@ final class ScanViewModel: ObservableObject {
             guard let self, self.scanID == currentID else { return }
             self.isScanning = false
             self.scanTask = nil
+            self.statusMessage = "扫描完成：可用 \(self.availableCount) / \(self.totalCount)"
         }
     }
 
@@ -291,6 +305,10 @@ struct ScanView: View {
                 Text("已完成 \(model.scannedCount.formatted()) / \(model.totalCount.formatted())，有界并发不会阻塞界面")
                     .font(.caption).foregroundStyle(.white.opacity(0.5))
             }
+            Text(model.statusMessage)
+                .font(.caption)
+                .foregroundStyle(model.statusMessage.contains("没有") ? .orange : .white.opacity(0.5))
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(15)
         .background(.white.opacity(0.065), in: RoundedRectangle(cornerRadius: 18))
