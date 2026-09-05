@@ -37,6 +37,7 @@ jobs:
         run: |
           mkdir -p build/ipa/Payload
           cp -R build/FishIPA.xcarchive/Products/Applications/FishIPA.app build/ipa/Payload/FishIPA.app
+          /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string 鱼儿优选" build/ipa/Payload/FishIPA.app/Info.plist
           /usr/bin/ditto -c -k --sequesterRsrc --keepParent build/ipa/Payload build/FishIPA.ipa
 
       - name: Upload IPA and archive
