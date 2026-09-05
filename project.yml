@@ -1,0 +1,33 @@
+name: FishIPA
+options:
+  bundleIdPrefix: com.fishipa
+  deploymentTarget:
+    iOS: "16.0"
+  developmentLanguage: zh-Hans
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: 5.9
+    DEVELOPMENT_TEAM: ""
+targets:
+  FishIPA:
+    type: application
+    platform: iOS
+    sources:
+      - path: FishIPA/Sources
+    resources:
+      - path: FishIPA/Resources
+    entitlements: FishIPA/FishIPA.entitlements
+    info:
+      path: FishIPA/Resources/Info.plist
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.fishipa.app
+        PRODUCT_NAME: FishIPA
+        INFOPLIST_FILE: FishIPA/Resources/Info.plist
+        CODE_SIGN_ENTITLEMENTS: FishIPA/FishIPA.entitlements
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        TARGETED_DEVICE_FAMILY: "1,2"
+    scheme:
+      gatherCoverageData: false
+      testTargets: []

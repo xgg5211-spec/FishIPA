@@ -1,0 +1,37 @@
+name: Build FishIPA
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build archive
+        run: |
+          xcodebuild archive \
+            -project FishIPA.xcodeproj \
+            -scheme FishIPA \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/FishIPA.xcarchive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FishIPA-${{ github.sha }}
+          path: build/FishIPA.xcarchive
