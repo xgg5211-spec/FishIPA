@@ -259,6 +259,13 @@ final class ScanViewModel: ObservableObject {
         UIPasteboard.general.string = filteredResults.map(\.address).joined(separator: "\n")
     }
 
+    func copyFastestResult() -> Bool {
+        guard let fastest = results.first(where: \.isAvailable) else { return false }
+        UIPasteboard.general.string = fastest.address
+        statusMessage = "已复制最快节点：\(fastest.address)"
+        return true
+    }
+
     var exportText: String {
         filteredResults.map { "\($0.address),\($0.family.rawValue),\($0.displayLatency),\($0.error ?? "")" }.joined(separator: "\n")
     }
@@ -387,6 +394,11 @@ struct ScanView: View {
             HStack {
                 TextField("搜索 IP", text: $model.searchText).textFieldStyle(.roundedBorder)
                 Toggle("可用", isOn: $model.onlyAvailable).labelsHidden().tint(.cyan)
+                Button {
+                    copied = model.copyFastestResult()
+                } label: { Image(systemName: "bolt.fill") }
+                .buttonStyle(.bordered).tint(.orange).disabled(model.availableCount == 0)
+                .accessibilityLabel("复制最快 IP")
                 Button {
                     model.copyVisibleResults(); copied = true
                 } label: { Image(systemName: copied ? "checkmark" : "square.on.square") }
