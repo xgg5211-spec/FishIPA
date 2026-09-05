@@ -3,6 +3,8 @@ name: Build FishIPA
 on:
   push:
     branches: [main, master]
+    paths-ignore:
+      - "data/edgetunnel/**"
   pull_request:
   workflow_dispatch:
 
