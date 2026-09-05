@@ -2,6 +2,7 @@ import Foundation
 import Network
 import SwiftUI
 import UniformTypeIdentifiers
+import Vision
 
 enum ProbeMode: String, CaseIterable, Identifiable {
     case tls = "TLS 握手"
@@ -187,13 +188,71 @@ final class ScanViewModel: ObservableObject {
     }
 
     func pasteFromClipboard() {
-        if let value = UIPasteboard.general.string { inputText = value }
+        let pasteboard = UIPasteboard.general
+        if let value = pasteboard.string, !value.isEmpty {
+            inputText = value
+            statusMessage = "已粘贴文本 IP"
+            return
+        }
+        guard let image = pasteboard.image else {
+            statusMessage = "剪贴板没有文本或图片"
+            return
+        }
+        statusMessage = "正在识别图片中的 IP..."
+        recognizeAddresses(in: image)
     }
 
     func importFile(_ url: URL) {
         guard url.startAccessingSecurityScopedResource() else { return }
         defer { url.stopAccessingSecurityScopedResource() }
-        if let value = try? String(contentsOf: url, encoding: .utf8) { inputText = value }
+        if let value = try? String(contentsOf: url, encoding: .utf8), !value.isEmpty {
+            inputText = value
+            statusMessage = "已导入文件，共识别文本内容"
+            return
+        }
+        if let data = try? Data(contentsOf: url), let value = String(data: data, encoding: .utf8), !value.isEmpty {
+            inputText = value
+            statusMessage = "已导入文件，共识别文本内容"
+            return
+        }
+        statusMessage = "文件不是可读取的文本格式"
+    }
+
+    private func recognizeAddresses(in image: UIImage) {
+        guard let cgImage = image.cgImage else {
+            statusMessage = "图片格式无法识别"
+            return
+        }
+        let request = VNRecognizeTextRequest { [weak self] request, error in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if let error {
+                    self.statusMessage = "图片识别失败：\(error.localizedDescription)"
+                    return
+                }
+                let lines = (request.results as? [VNRecognizedTextObservation] ?? [])
+                    .compactMap { $0.topCandidates(1).first?.string }
+                let recognized = lines.joined(separator: "\n")
+                guard !recognized.isEmpty else {
+                    self.statusMessage = "图片中没有识别到文本"
+                    return
+                }
+                self.inputText = recognized
+                self.statusMessage = "已从图片识别文本，请检查后开始扫描"
+            }
+        }
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = false
+        request.recognitionLanguages = ["en-US", "zh-Hans"]
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try VNImageRequestHandler(cgImage: cgImage, options: [:]).perform([request])
+            } catch {
+                Task { @MainActor [weak self] in
+                    self?.statusMessage = "图片识别失败：\(error.localizedDescription)"
+                }
+            }
+        }
     }
 
     func copyVisibleResults() {
@@ -240,7 +299,7 @@ struct ScanView: View {
             }
         }
         .preferredColorScheme(.dark)
-        .fileImporter(isPresented: $showImporter, allowedContentTypes: [.plainText, .commaSeparatedText, .text]) { result in
+        .fileImporter(isPresented: $showImporter, allowedContentTypes: [.data, .text, .plainText, .commaSeparatedText, .item], allowsMultipleSelection: false) { result in
             if case .success(let url) = result { model.importFile(url) }
         }
     }
