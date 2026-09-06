@@ -99,7 +99,7 @@ private enum NetworkProbe {
 
     private static func traceRegion(_ connection: NWConnection, timeout: TimeInterval) async throws -> String? {
         let request = "GET /cdn-cgi/trace HTTP/1.1\r\nHost: speed.cloudflare.com\r\nConnection: close\r\n\r\n"
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<String?, Error>) in
+        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<String?, Error>) in
             let lock = NSLock()
             var completed = false
             func finish(_ result: Result<String?, Error>) {
