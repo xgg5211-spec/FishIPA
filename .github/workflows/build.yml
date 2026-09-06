@@ -30,6 +30,7 @@ jobs:
 
       - name: Build archive
         run: |
+          mkdir -p build
           set -o pipefail
           xcodebuild archive \
             -project FishIPA.xcodeproj \
