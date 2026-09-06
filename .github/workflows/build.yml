@@ -45,7 +45,9 @@ jobs:
       - name: Package unsigned IPA for TrollStore
         run: |
           mkdir -p build/ipa/Payload
-          cp -R build/FishIPA.xcarchive/Products/Applications/FishIPA.app build/ipa/Payload/FishIPA.app
+          app_path=$(find build/FishIPA.xcarchive/Products/Applications -maxdepth 1 -type d -name '*.app' -print -quit)
+          test -n "$app_path"
+          cp -R "$app_path" build/ipa/Payload/
           /usr/bin/ditto -c -k --sequesterRsrc --keepParent build/ipa/Payload build/FishIPA.ipa
 
       - name: Upload IPA and archive
