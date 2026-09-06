@@ -147,6 +147,7 @@ private enum NetworkProbe {
             }
             connection.start(queue: .global(qos: .userInitiated))
             DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + timeout) {
+                connection.cancel()
                 finish(.failure(ProbeError.timeout))
             }
         }
@@ -335,23 +336,18 @@ final class ScanViewModel: ObservableObject {
                             if let explicitPort = target.port ?? requestedPort {
                                 return await NetworkProbe.measure(address: target.address, port: explicitPort, mode: selectedMode, timeout: timeout, shouldMeasureBandwidth: measureBandwidth)
                             }
-                            let portResults = await withTaskGroup(of: ScanResult.self, returning: [ScanResult].self) { portGroup in
-                                for candidatePort in automaticPorts {
-                                    portGroup.addTask {
-                                        await NetworkProbe.measure(address: target.address, port: candidatePort, mode: selectedMode, timeout: timeout, shouldMeasureBandwidth: false)
+                            var lastResult: ScanResult?
+                            for candidatePort in automaticPorts {
+                                let result = await NetworkProbe.measure(address: target.address, port: candidatePort, mode: selectedMode, timeout: timeout, shouldMeasureBandwidth: false)
+                                lastResult = result
+                                if result.isAvailable {
+                                    if measureBandwidth {
+                                        return await NetworkProbe.measure(address: result.address, port: result.port, mode: selectedMode, timeout: timeout, shouldMeasureBandwidth: true)
                                     }
+                                    return result
                                 }
-                                var values: [ScanResult] = []
-                                for await value in portGroup { values.append(value) }
-                                return values
                             }
-                            guard let best = portResults.filter(\.isAvailable).min(by: { ($0.latency ?? .greatestFiniteMagnitude) < ($1.latency ?? .greatestFiniteMagnitude) }) else {
-                                return portResults.first
-                            }
-                            if measureBandwidth {
-                                return await NetworkProbe.measure(address: best.address, port: best.port, mode: selectedMode, timeout: timeout, shouldMeasureBandwidth: true)
-                            }
-                            return best
+                            return lastResult
                         }
                     }
                     var values: [ScanResult] = []
