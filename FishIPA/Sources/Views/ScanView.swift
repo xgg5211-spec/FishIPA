@@ -175,6 +175,10 @@ final class ScanViewModel: ObservableObject {
     @Published var searchText = ""
     @Published private(set) var isUpdatingPool = false
     @Published var regionFilter: RegionFilter = .all
+    @Published var countryCode = ""
+    @Published var useOfficialIPv4 = true
+    @Published var useOfficialIPv6 = true
+    @Published var officialCIDR = ""
 
     private var scanTask: Task<Void, Never>?
     private var scanID = UUID()
@@ -204,8 +208,12 @@ final class ScanViewModel: ObservableObject {
     }
 
     private func matchesRegion(_ region: String?) -> Bool {
-        guard regionFilter != .all else { return true }
         let value = region?.uppercased() ?? ""
+        let requestedCountry = countryCode.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        if !requestedCountry.isEmpty && !value.split(separator: "·").contains(where: { $0.trimmingCharacters(in: .whitespaces).hasPrefix(requestedCountry) }) {
+            return false
+        }
+        guard regionFilter != .all else { return true }
         switch regionFilter {
         case .all: return true
         case .us: return value.contains("US") || value.contains("美国")
@@ -339,7 +347,12 @@ final class ScanViewModel: ObservableObject {
                     for try await text in group { output.append(contentsOf: text.split(whereSeparator: \.isNewline).map(String.init)) }
                     return output
                 }
-                let targets = values.flatMap(Self.sampleTargets(from:))
+                let targets = values.filter { cidr in
+                    let isIPv6 = cidr.contains(":")
+                    let familyEnabled = isIPv6 ? self?.useOfficialIPv6 == true : self?.useOfficialIPv4 == true
+                    let requestedCIDR = self?.officialCIDR.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    return familyEnabled && (requestedCIDR.isEmpty || requestedCIDR == cidr)
+                }.flatMap(Self.sampleTargets(from:))
                 guard !targets.isEmpty else { throw URLError(.cannotParseResponse) }
                 self?.inputText = targets.map { target in
                     let host = target.address.contains(":") ? "[\(target.address)]" : target.address
@@ -607,13 +620,14 @@ struct ScanView: View {
                 .frame(minHeight: 120, maxHeight: 180)
                 .padding(8)
                 .background(.black.opacity(0.22), in: RoundedRectangle(cornerRadius: 12))
-            HStack(spacing: 10) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 10) {
                 smallButton("粘贴", icon: "doc.on.clipboard") { model.pasteFromClipboard() }
                 smallButton("导入文件", icon: "arrow.up.doc") { showImporter = true }
                 smallButton(model.isUpdatingPool ? "更新中" : "Cloudflare 官方", icon: "cloud.fill") { model.updateFromCloudflare() }
                 smallButton(model.isUpdatingPool ? "更新中" : "更新 IP 库", icon: "arrow.triangle.2.circlepath") { model.updateFromGitHub() }
                 smallButton("清空", icon: "trash") { model.inputText = "" }
-                Spacer()
+                }
             }
         }
         .padding(15)
@@ -626,7 +640,7 @@ struct ScanView: View {
                 ForEach(ProbeMode.allCases) { mode in Label(mode.rawValue, systemImage: mode.icon).tag(mode) }
             }
             .pickerStyle(.segmented)
-            HStack(spacing: 8) {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 78), spacing: 8)], spacing: 10) {
                 settingField("端口", text: $model.portText, width: 58)
                 settingField("并发", text: $model.concurrencyText, width: 58)
                 settingField("超时 s", text: $model.timeoutText, width: 58)
@@ -635,10 +649,27 @@ struct ScanView: View {
                 }
                 .tint(.cyan)
             }
-            Picker("地区", selection: $model.regionFilter) {
-                ForEach(RegionFilter.allCases) { Text($0.rawValue).tag($0) }
+            VStack(alignment: .leading, spacing: 8) {
+                Text("优选地区").font(.caption).foregroundStyle(.white.opacity(0.55))
+                Picker("地区", selection: $model.regionFilter) {
+                    ForEach(RegionFilter.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                TextField("国家代码，可填 US / DE / JP", text: $model.countryCode)
+                    .textFieldStyle(.roundedBorder)
+                    .textInputAutocapitalization(.characters)
+                    .autocorrectionDisabled()
             }
-            .pickerStyle(.segmented)
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Cloudflare 官方网段").font(.caption).foregroundStyle(.white.opacity(0.55))
+                HStack {
+                    Toggle("IPv4", isOn: $model.useOfficialIPv4).tint(.cyan)
+                    Toggle("IPv6", isOn: $model.useOfficialIPv6).tint(.cyan)
+                }
+                TextField("指定网段，可填 104.16.0.0/13", text: $model.officialCIDR)
+                    .textFieldStyle(.roundedBorder)
+                    .autocorrectionDisabled()
+            }
             Button {
                 model.isScanning ? model.stopScan() : model.startScan()
             } label: {
