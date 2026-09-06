@@ -54,8 +54,6 @@ def sample_addresses(version: int, per_network: int, limit: int, seed: int) -> l
 async def tls_probe(address: str, port: int, timeout: float) -> dict | None:
     started = time.perf_counter()
     context = ssl.create_default_context()
-    context.check_hostname = False
-    context.verify_mode = ssl.CERT_NONE
     try:
         reader, writer = await asyncio.wait_for(
             asyncio.open_connection(
@@ -112,6 +110,8 @@ def main() -> None:
     ipv6_limit = max(args.max_candidates - ipv4_limit, 1)
     ipv4 = sample_addresses(4, args.sample_per_network, ipv4_limit, seed)
     ipv6 = sample_addresses(6, args.sample_per_network, ipv6_limit, seed)
+    ipv4_networks = load_networks(4)
+    ipv6_networks = load_networks(6)
     candidates = ipv4 + ipv6
     results = asyncio.run(scan(candidates, args.port, args.timeout, args.workers))
     kept = results[: max(args.keep, 1)]
@@ -131,6 +131,8 @@ def main() -> None:
     (args.output_dir / "ADD.txt").write_text("\n".join(edge_address(item) for item in kept) + "\n", encoding="utf-8")
     (args.output_dir / "ipv4.txt").write_text("\n".join(edge_address(item) for item in kept if item["ip_version"] == 4) + "\n", encoding="utf-8")
     (args.output_dir / "ipv6.txt").write_text("\n".join(edge_address(item) for item in kept if item["ip_version"] == 6) + "\n", encoding="utf-8")
+    (args.output_dir / "source_ipv4.txt").write_text("\n".join(str(network) for network in ipv4_networks) + "\n", encoding="utf-8")
+    (args.output_dir / "source_ipv6.txt").write_text("\n".join(str(network) for network in ipv6_networks) + "\n", encoding="utf-8")
     with (args.output_dir / "results.csv").open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=["ip", "port", "latency", "ip_version", "probe"])
         writer.writeheader()

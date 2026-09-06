@@ -38,6 +38,9 @@ jobs:
       - name: Validate clean EdgeTunnel entries
         run: |
           test -s data/edgetunnel/ADD.txt
+          test -s data/edgetunnel/source_ipv4.txt
+          test -s data/edgetunnel/source_ipv6.txt
+          test -s data/edgetunnel/results.json
           if grep -Eq '#|ms' data/edgetunnel/ADD.txt; then
             echo "ADD.txt must contain clean IP:port entries without latency remarks"
             exit 1
