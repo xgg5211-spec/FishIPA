@@ -2,8 +2,12 @@ name: Recover Failed FishIPA Workflow
 
 on:
   workflow_run:
-    workflows: ["Build FishIPA", "Scheduled Cloudflare Scan"]
+    workflows:
+      - "Build FishIPA"
+      - "Scheduled Cloudflare Scan"
+      - "Update EdgeTunnel IP Pool"
     types: [completed]
+  workflow_dispatch:
 
 permissions:
   actions: write
@@ -12,35 +16,53 @@ permissions:
 jobs:
   recover:
     if: >-
-      ${{
-        github.event.workflow_run.conclusion == 'failure' &&
-        github.event.workflow_run.run_attempt < 2
-      }}
+      ${
+        github.event_name == 'workflow_dispatch' ||
+        (
+          (
+            github.event.workflow_run.conclusion == 'failure' ||
+            github.event.workflow_run.conclusion == 'cancelled' ||
+            github.event.workflow_run.conclusion == 'timed_out'
+          ) &&
+          github.event.workflow_run.run_attempt < 3
+        )
+      }
     runs-on: ubuntu-24.04
     steps:
       - name: Download failure logs
         env:
           GH_TOKEN: ${{ github.token }}
-          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_ID: ${{ github.event.workflow_run.id || github.run_id }}
         run: |
           mkdir -p recovery-logs
-          gh api \
-            -H 'Accept: application/vnd.github+json' \
-            "/repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/logs" \
-            > recovery-logs/workflow-${RUN_ID}.zip
+          if [ -n "${RUN_ID:-}" ] && [ "${RUN_ID}" != "null" ]; then
+            gh api \
+              -H 'Accept: application/vnd.github+json' \
+              "/repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/logs" \
+              > recovery-logs/workflow-${RUN_ID}.zip
+          else
+            echo "No workflow_run id available; skipping log download."
+          fi
 
       - name: Upload failure logs
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: failure-logs-${{ github.event.workflow_run.id }}
-          path: recovery-logs/workflow-${{ github.event.workflow_run.id }}.zip
+          name: failure-logs-${{ github.event.workflow_run.id || github.run_id }}
+          path: recovery-logs
           retention-days: 14
+          if-no-files-found: ignore
 
       - name: Retry failed jobs once
         env:
           GH_TOKEN: ${{ github.token }}
-          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_ID: ${{ github.event.workflow_run.id || github.run_id }}
         run: |
+          if [ -z "${RUN_ID:-}" ] || [ "${RUN_ID}" = "null" ]; then
+            echo "No failed workflow run id to retry."
+            exit 0
+          fi
+          echo "Rerunning failed workflow ${RUN_ID}"
           gh run rerun "${RUN_ID}" \
             --failed \
             --repo "${GITHUB_REPOSITORY}"
