@@ -68,6 +68,9 @@ jobs:
       - name: Publish compiler errors
         if: failure()
         run: |
+          grep -E "error:|fatal error:|BUILD FAILED" build/xcodebuild.log | while IFS= read -r line; do
+            echo "::error::$line"
+          done || true
           {
             echo "## xcodebuild diagnostics"
             grep -E "error:|fatal error:|BUILD FAILED" build/xcodebuild.log || true
