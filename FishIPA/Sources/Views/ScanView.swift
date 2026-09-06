@@ -160,7 +160,7 @@ private enum NetworkProbe {
         return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<(String?, Double), Error>) in
             let lock = NSLock()
             var completed = false
-            func finish(_ result: Result<String?, Error>) {
+            func finish(_ result: Result<(String?, Double), Error>) {
                 lock.lock()
                 guard !completed else { lock.unlock(); return }
                 completed = true
@@ -184,7 +184,7 @@ private enum NetworkProbe {
                             finish(.success((label.isEmpty ? nil : label, elapsed)))
                             return
                         }
-                        if isComplete || buffer.count > 64 * 1024 { finish(.success(nil)); return }
+                        if isComplete || buffer.count > 64 * 1024 { finish(.failure(ProbeError.timeout)); return }
                         receiveMore()
                     }
                 }
