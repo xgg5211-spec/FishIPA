@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import PDFKit
 import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
@@ -54,6 +55,8 @@ private struct AddressTarget: Hashable {
     let address: String
     let port: UInt16?
 }
+
+private let automaticPorts: [UInt16] = [443, 2053, 2083, 2087, 2096, 8443]
 
 private enum ProbeError: LocalizedError {
     case timeout
@@ -192,7 +195,7 @@ final class ScanViewModel: ObservableObject {
     @Published var inputText: String
     @Published private(set) var statusMessage = "已载入 Cloudflare 默认节点"
     @Published var mode: ProbeMode = .tls
-    @Published var portText = "443"
+    @Published var portText = "自动"
     @Published var concurrencyText = "80"
     @Published var timeoutText = "2"
     @Published var family: AddressFamily = .all
@@ -252,7 +255,7 @@ final class ScanViewModel: ObservableObject {
             (family == .all || result.family == family) &&
             (!onlyAvailable || result.isAvailable) &&
             (selectedPort == "全部端口" || selectedPort == String(result.port)) &&
-            (Double(expectedBandwidthText) ?? 0 <= (result.bandwidthMbps ?? 0)) &&
+            meetsBandwidth(result.bandwidthMbps) &&
             matchesRegion(result.region) &&
             (searchText.isEmpty || result.address.localizedCaseInsensitiveContains(searchText))
         }
@@ -277,6 +280,13 @@ final class ScanViewModel: ObservableObject {
         }
     }
 
+    private func meetsBandwidth(_ measured: Double?) -> Bool {
+        let expected = max(Double(expectedBandwidthText) ?? 0, 0)
+        guard expected > 0 else { return true }
+        guard let measured else { return true }
+        return measured >= expected
+    }
+
     private func matchesKnownRegion(_ value: String) -> Bool {
         matchesRegionValue(value, values: ["US", "美国", "DE", "FR", "NL", "GB", "EU", "德国", "法国", "CN", "HK", "JP", "SG", "KR", "TW", "中国", "日本"])
     }
@@ -293,20 +303,24 @@ final class ScanViewModel: ObservableObject {
             return
         }
 
-        let port = UInt16(portText) ?? 443
+        let requestedPort = UInt16(portText)
         let concurrency = min(max(Int(concurrencyText) ?? 80, 1), 200)
         let timeout = min(max(Double(timeoutText) ?? 2, 0.5), 10)
         let selectedMode = mode
+        let scanTargets = targets.flatMap { target -> [AddressTarget] in
+            guard target.port == nil, requestedPort == nil else { return [target] }
+            return automaticPorts.map { AddressTarget(address: target.address, port: $0) }
+        }
         let currentID = UUID()
         scanID = currentID
         results = []
         scannedCount = 0
-        totalCount = targets.count
+        totalCount = scanTargets.count
         isScanning = true
-        statusMessage = "正在进行 \(selectedMode.rawValue)，共 \(targets.count) 个地址"
+        statusMessage = "正在进行 \(selectedMode.rawValue)，自动端口共 \(scanTargets.count) 个任务"
 
         scanTask = Task { [weak self] in
-            var pending = targets
+            var pending = scanTargets
             while !pending.isEmpty {
                 guard !Task.isCancelled else { return }
                 let batch = Array(pending.prefix(concurrency))
@@ -314,7 +328,7 @@ final class ScanViewModel: ObservableObject {
                 let batchResults = await withTaskGroup(of: ScanResult.self, returning: [ScanResult].self) { group in
                     for target in batch {
                         group.addTask {
-                            await NetworkProbe.measure(address: target.address, port: target.port ?? port, mode: selectedMode, timeout: timeout)
+                            await NetworkProbe.measure(address: target.address, port: target.port ?? requestedPort ?? 443, mode: selectedMode, timeout: timeout)
                         }
                     }
                     var values: [ScanResult] = []
@@ -443,12 +457,14 @@ final class ScanViewModel: ObservableObject {
     }
 
     func importFile(_ url: URL) {
-        guard url.startAccessingSecurityScopedResource() else { return }
-        defer { url.stopAccessingSecurityScopedResource() }
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer {
+            if accessed { url.stopAccessingSecurityScopedResource() }
+        }
 
         let type = (url.pathExtension.lowercased())
         if ["png", "jpg", "jpeg", "heic", "heif", "webp"].contains(type) {
-            let image = UIImage(contentsOfFile: url.path)
+            let image = UIImage(data: (try? Data(contentsOf: url)) ?? Data())
             guard let image else {
                 statusMessage = "图片文件无法读取"
                 return
@@ -458,15 +474,17 @@ final class ScanViewModel: ObservableObject {
             return
         }
 
-        if let value = try? String(contentsOf: url, encoding: .utf8), !value.isEmpty {
+        if type == "pdf", let document = PDFDocument(url: url), let value = document.string, !value.isEmpty {
             importText(value)
             return
         }
-        if let data = try? Data(contentsOf: url), let value = String(data: data, encoding: .utf8), !value.isEmpty {
+
+        if let data = try? Data(contentsOf: url), !data.isEmpty {
+            let value = String(decoding: data, as: UTF8.self)
             importText(value)
             return
         }
-        statusMessage = "文件不是可读取的文本或图片格式"
+        statusMessage = "文件已读取，但没有识别到 IP 或网段"
     }
 
     private func importText(_ rawText: String) {
@@ -836,7 +854,7 @@ struct ScanView: View {
     private func settingField(_ title: String, text: Binding<String>, width: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(title).font(.caption2).foregroundStyle(.white.opacity(0.5))
-            TextField(title, text: text).keyboardType(.numberPad).textFieldStyle(.roundedBorder).frame(width: width)
+            TextField(title, text: text).keyboardType(.asciiCapable).textFieldStyle(.roundedBorder).frame(width: width)
         }
     }
 }
