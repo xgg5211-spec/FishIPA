@@ -21,6 +21,16 @@ enum AddressFamily: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+enum RegionFilter: String, CaseIterable, Identifiable {
+    case all = "全部地区"
+    case us = "US"
+    case eu = "EU"
+    case asia = "亚洲"
+    case other = "其他"
+
+    var id: String { rawValue }
+}
+
 struct ScanResult: Identifiable, Hashable {
     let id: String
     let address: String
@@ -164,6 +174,7 @@ final class ScanViewModel: ObservableObject {
     @Published var onlyAvailable = true
     @Published var searchText = ""
     @Published private(set) var isUpdatingPool = false
+    @Published var regionFilter: RegionFilter = .all
 
     private var scanTask: Task<Void, Never>?
     private var scanID = UUID()
@@ -187,8 +198,29 @@ final class ScanViewModel: ObservableObject {
         results.filter { result in
             (family == .all || result.family == family) &&
             (!onlyAvailable || result.isAvailable) &&
+            matchesRegion(result.region) &&
             (searchText.isEmpty || result.address.localizedCaseInsensitiveContains(searchText))
         }
+    }
+
+    private func matchesRegion(_ region: String?) -> Bool {
+        guard regionFilter != .all else { return true }
+        let value = region?.uppercased() ?? ""
+        switch regionFilter {
+        case .all: return true
+        case .us: return value.contains("US") || value.contains("美国")
+        case .eu: return ["DE", "FR", "NL", "GB", "EU", "德国", "法国"].contains { value.contains($0) }
+        case .asia: return ["CN", "HK", "JP", "SG", "KR", "TW", "中国", "日本"].contains { value.contains($0) }
+        case .other: return !value.isEmpty && !matchesKnownRegion(value)
+        }
+    }
+
+    private func matchesKnownRegion(_ value: String) -> Bool {
+        matchesRegionValue(value, values: ["US", "美国", "DE", "FR", "NL", "GB", "EU", "德国", "法国", "CN", "HK", "JP", "SG", "KR", "TW", "中国", "日本"])
+    }
+
+    private func matchesRegionValue(_ value: String, values: [String]) -> Bool {
+        values.contains { value.contains($0) }
     }
 
     func startScan() {
@@ -282,6 +314,60 @@ final class ScanViewModel: ObservableObject {
             }
             self?.isUpdatingPool = false
         }
+    }
+
+    func updateFromCloudflare() {
+        guard !isUpdatingPool else { return }
+        isUpdatingPool = true
+        statusMessage = "正在读取 Cloudflare 官方 IPv4/IPv6 网段..."
+        let urls = [
+            URL(string: "https://www.cloudflare.com/ips-v4")!,
+            URL(string: "https://www.cloudflare.com/ips-v6")!
+        ]
+        Task { [weak self] in
+            do {
+                let values = try await withThrowingTaskGroup(of: String.self, returning: [String].self) { group in
+                    for url in urls {
+                        group.addTask {
+                            let (data, response) = try await URLSession.shared.data(from: url)
+                            guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
+                                  let text = String(data: data, encoding: .utf8) else { throw URLError(.badServerResponse) }
+                            return text
+                        }
+                    }
+                    var output: [String] = []
+                    for try await text in group { output.append(contentsOf: text.split(whereSeparator: \.isNewline).map(String.init)) }
+                    return output
+                }
+                let targets = values.flatMap(Self.sampleTargets(from:))
+                guard !targets.isEmpty else { throw URLError(.cannotParseResponse) }
+                self?.inputText = targets.map { target in
+                    let host = target.address.contains(":") ? "[\(target.address)]" : target.address
+                    return "\(host):\(target.port ?? 443)"
+                }.joined(separator: "\n")
+                self?.statusMessage = "已载入 Cloudflare 官方网段：\(targets.count) 个 TLS 节点"
+            } catch {
+                self?.statusMessage = "Cloudflare 官方 IP 库读取失败：\(error.localizedDescription)"
+            }
+            self?.isUpdatingPool = false
+        }
+    }
+
+    private static func sampleTargets(from cidr: String) -> [AddressTarget] {
+        let parts = cidr.split(separator: "/", maxSplits: 1).map(String.init)
+        guard parts.count == 2, let prefix = Int(parts[1]), (0...128).contains(prefix) else { return [] }
+        if let ipv4 = parts[0].split(separator: ".").compactMap({ UInt8($0) }), ipv4.count == 4, prefix <= 32 {
+            let base = ipv4.reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
+            let mask: UInt32 = prefix == 0 ? 0 : UInt32.max << UInt32(32 - prefix)
+            let network = base & mask
+            let host = min(network + 1, UInt32.max)
+            let address = [host >> 24, host >> 16, host >> 8, host].map { String($0 & 255) }.joined(separator: ".")
+            return [AddressTarget(address: address, port: 443)]
+        }
+        if parts[0].contains(":") {
+            return [AddressTarget(address: parts[0], port: 443)]
+        }
+        return []
     }
 
     func importFile(_ url: URL) {
@@ -523,6 +609,7 @@ struct ScanView: View {
             HStack(spacing: 10) {
                 smallButton("粘贴", icon: "doc.on.clipboard") { model.pasteFromClipboard() }
                 smallButton("导入文件", icon: "arrow.up.doc") { showImporter = true }
+                smallButton(model.isUpdatingPool ? "更新中" : "Cloudflare 官方", icon: "cloud.fill") { model.updateFromCloudflare() }
                 smallButton(model.isUpdatingPool ? "更新中" : "更新 IP 库", icon: "arrow.triangle.2.circlepath") { model.updateFromGitHub() }
                 smallButton("清空", icon: "trash") { model.inputText = "" }
                 Spacer()
@@ -547,6 +634,10 @@ struct ScanView: View {
                 }
                 .tint(.cyan)
             }
+            Picker("地区", selection: $model.regionFilter) {
+                ForEach(RegionFilter.allCases) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented)
             Button {
                 model.isScanning ? model.stopScan() : model.startScan()
             } label: {

@@ -8,6 +8,7 @@ import ipaddress
 import json
 import random
 import socket
+import ssl
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -45,13 +46,19 @@ def sample_addresses(version: int, per_network: int) -> list[str]:
 
 async def probe(address: str, port: int, timeout: float) -> dict | None:
     started = time.perf_counter()
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
     try:
-        reader, writer = await asyncio.wait_for(asyncio.open_connection(address, port), timeout)
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(address, port, ssl=context, server_hostname="speed.cloudflare.com"),
+            timeout,
+        )
         latency = round((time.perf_counter() - started) * 1000, 2)
         writer.close()
         await writer.wait_closed()
         return {"ip": address, "latency": latency, "port": port, "ip_version": 6 if ":" in address else 4}
-    except (OSError, asyncio.TimeoutError):
+    except (OSError, asyncio.TimeoutError, ssl.SSLError):
         return None
 
 
