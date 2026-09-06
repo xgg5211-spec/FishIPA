@@ -93,7 +93,7 @@ async def scan(addresses: list[str], port: int, timeout: float, workers: int) ->
 
 def edge_address(item: dict) -> str:
     host = f"[{item['ip']}]" if item["ip_version"] == 6 else item["ip"]
-    return f"{host}:{item['port']}#FishIPA TLS {item['latency']:.0f}ms"
+    return f"{host}:{item['port']}"
 
 
 def main() -> None:
@@ -129,8 +129,8 @@ def main() -> None:
     }
     (args.output_dir / "results.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     (args.output_dir / "ADD.txt").write_text("\n".join(edge_address(item) for item in kept) + "\n", encoding="utf-8")
-    (args.output_dir / "ipv4.txt").write_text("\n".join(item["ip"] for item in kept if item["ip_version"] == 4) + "\n", encoding="utf-8")
-    (args.output_dir / "ipv6.txt").write_text("\n".join(item["ip"] for item in kept if item["ip_version"] == 6) + "\n", encoding="utf-8")
+    (args.output_dir / "ipv4.txt").write_text("\n".join(edge_address(item) for item in kept if item["ip_version"] == 4) + "\n", encoding="utf-8")
+    (args.output_dir / "ipv6.txt").write_text("\n".join(edge_address(item) for item in kept if item["ip_version"] == 6) + "\n", encoding="utf-8")
     with (args.output_dir / "results.csv").open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=["ip", "port", "latency", "ip_version", "probe"])
         writer.writeheader()

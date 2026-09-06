@@ -24,6 +24,7 @@ enum AddressFamily: String, CaseIterable, Identifiable {
 struct ScanResult: Identifiable, Hashable {
     let id: String
     let address: String
+    let port: UInt16
     let family: AddressFamily
     let latency: Double?
     let region: String?
@@ -31,6 +32,15 @@ struct ScanResult: Identifiable, Hashable {
 
     var isAvailable: Bool { latency != nil }
     var displayLatency: String { latency.map { String(format: "%.0f ms", $0) } ?? "失败" }
+    var endpoint: String {
+        let host = family == .ipv6 ? "[\(address)]" : address
+        return "\(host):\(port)"
+    }
+}
+
+private struct AddressTarget: Hashable {
+    let address: String
+    let port: UInt16?
 }
 
 private enum ProbeError: LocalizedError {
@@ -62,9 +72,9 @@ private enum NetworkProbe {
                 region = nil
             }
             connection.cancel()
-            return ScanResult(id: address, address: address, family: family, latency: elapsed, region: region, error: nil)
+            return ScanResult(id: "\(address):\(port)", address: address, port: port, family: family, latency: elapsed, region: region, error: nil)
         } catch {
-            return ScanResult(id: address, address: address, family: family, latency: nil, region: nil, error: error.localizedDescription)
+            return ScanResult(id: "\(address):\(port)", address: address, port: port, family: family, latency: nil, region: nil, error: error.localizedDescription)
         }
     }
 
@@ -153,6 +163,7 @@ final class ScanViewModel: ObservableObject {
     @Published var family: AddressFamily = .all
     @Published var onlyAvailable = true
     @Published var searchText = ""
+    @Published private(set) var isUpdatingPool = false
 
     private var scanTask: Task<Void, Never>?
     private var scanID = UUID()
@@ -182,8 +193,8 @@ final class ScanViewModel: ObservableObject {
 
     func startScan() {
         stopScan()
-        let addresses = parseAddresses(inputText.isEmpty ? Self.defaultAddresses.joined(separator: "\n") : inputText)
-        guard !addresses.isEmpty else {
+        let targets = parseTargets(inputText.isEmpty ? Self.defaultAddresses.joined(separator: "\n") : inputText)
+        guard !targets.isEmpty else {
             statusMessage = "没有识别到有效 IP，请粘贴 IPv4 或 IPv6 地址"
             return
         }
@@ -196,12 +207,12 @@ final class ScanViewModel: ObservableObject {
         scanID = currentID
         results = []
         scannedCount = 0
-        totalCount = addresses.count
+        totalCount = targets.count
         isScanning = true
-        statusMessage = "正在进行 \(selectedMode.rawValue)，共 \(addresses.count) 个地址"
+        statusMessage = "正在进行 \(selectedMode.rawValue)，共 \(targets.count) 个地址"
 
         scanTask = Task { [weak self] in
-            var pending = addresses
+            var pending = targets
             while !pending.isEmpty {
                 guard !Task.isCancelled else { return }
                 let batch = Array(pending.prefix(concurrency))
@@ -209,7 +220,7 @@ final class ScanViewModel: ObservableObject {
                 let batchResults = await withTaskGroup(of: ScanResult.self, returning: [ScanResult].self) { group in
                     for address in batch {
                         group.addTask {
-                            await NetworkProbe.measure(address: address, port: port, mode: selectedMode, timeout: timeout)
+                            await NetworkProbe.measure(address: target.address, port: target.port ?? port, mode: selectedMode, timeout: timeout)
                         }
                     }
                     var values: [ScanResult] = []
@@ -249,6 +260,30 @@ final class ScanViewModel: ObservableObject {
         recognizeAddresses(in: image)
     }
 
+    func updateFromGitHub() {
+        guard !isUpdatingPool else { return }
+        isUpdatingPool = true
+        statusMessage = "正在更新 GitHub IP 库..."
+        let url = URL(string: "https://raw.githubusercontent.com/xgg5211-spec/FishIPA/master/data/edgetunnel/ADD.txt")!
+        Task { [weak self] in
+            do {
+                let (data, response) = try await URLSession.shared.data(from: url)
+                guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
+                      let text = String(data: data, encoding: .utf8) else { throw URLError(.badServerResponse) }
+                let targets = self?.parseTargets(text) ?? []
+                guard !targets.isEmpty else { throw URLError(.cannotParseResponse) }
+                self?.inputText = targets.map { target in
+                    let host = target.address.contains(":") ? "[\(target.address)]" : target.address
+                    return target.port.map { "\(host):\($0)" } ?? host
+                }.joined(separator: "\n")
+                self?.statusMessage = "已更新 IP 库：\(targets.count) 个地址"
+            } catch {
+                self?.statusMessage = "IP 库更新失败：\(error.localizedDescription)"
+            }
+            self?.isUpdatingPool = false
+        }
+    }
+
     func importFile(_ url: URL) {
         guard url.startAccessingSecurityScopedResource() else { return }
         defer { url.stopAccessingSecurityScopedResource() }
@@ -277,13 +312,16 @@ final class ScanViewModel: ObservableObject {
     }
 
     private func importText(_ rawText: String) {
-        let addresses = parseAddresses(rawText)
-        guard !addresses.isEmpty else {
+        let targets = parseTargets(rawText)
+        guard !targets.isEmpty else {
             statusMessage = "未识别到有效 IP/端口地址，请检查文本内容"
             return
         }
-        inputText = addresses.joined(separator: "\n")
-        statusMessage = "已识别 \(addresses.count) 个有效地址，可直接开始扫描"
+        inputText = targets.map { target in
+            let host = target.address.contains(":") ? "[\(target.address)]" : target.address
+            return target.port.map { "\(host):\($0)" } ?? host
+        }.joined(separator: "\n")
+        statusMessage = "已识别 \(targets.count) 个有效地址，可直接开始扫描"
     }
 
     private func recognizeAddresses(in image: UIImage) {
@@ -324,30 +362,30 @@ final class ScanViewModel: ObservableObject {
     }
 
     func copyVisibleResults() {
-        UIPasteboard.general.string = filteredResults.map(\.address).joined(separator: "\n")
+        UIPasteboard.general.string = filteredResults.map(\.endpoint).joined(separator: "\n")
     }
 
     func copyFastestResult() -> Bool {
         guard let fastest = results.first(where: \.isAvailable) else { return false }
-        UIPasteboard.general.string = fastest.address
-        statusMessage = "已复制最快节点：\(fastest.address)"
+        UIPasteboard.general.string = fastest.endpoint
+        statusMessage = "已复制最快节点：\(fastest.endpoint)"
         return true
     }
 
     var exportText: String {
-        filteredResults.map { "\($0.address),\($0.family.rawValue),\($0.displayLatency),\($0.error ?? "")" }.joined(separator: "\n")
+        filteredResults.map(\.endpoint).joined(separator: "\n")
     }
 
-    private func parseAddresses(_ text: String) -> [String] {
-        var unique = Set<String>()
-        var results: [String] = []
+    private func parseTargets(_ text: String) -> [AddressTarget] {
+        var unique = Set<AddressTarget>()
+        var results: [AddressTarget] = []
 
         for rawLine in text.components(separatedBy: .newlines) {
             let line = rawLine.replacingOccurrences(of: "\r", with: "")
             let splitTokens = line
                 .replacingOccurrences(of: "https://", with: "")
                 .replacingOccurrences(of: "http://", with: "")
-                .components(separatedBy: CharacterSet(charactersIn: " ,;，；|\t\n\r\"'()[]{}<>"))
+                .components(separatedBy: CharacterSet(charactersIn: " ,;，；|\t\n\r\"'(){}<>"))
             for rawValue in splitTokens {
                 guard let candidate = normalizeAddressCandidate(rawValue) else { continue }
                 guard unique.insert(candidate).inserted else { continue }
@@ -358,11 +396,11 @@ final class ScanViewModel: ObservableObject {
         return results
     }
 
-    private func normalizeAddressCandidate(_ raw: String) -> String? {
+    private func normalizeAddressCandidate(_ raw: String) -> AddressTarget? {
         var value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { return nil }
 
-        value = value.trimmingCharacters(in: CharacterSet(charactersIn: "[](){}<>\"'"))
+        value = value.trimmingCharacters(in: CharacterSet(charactersIn: "(){}<>\"'"))
         if value.contains("#") {
             value = String(value.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: true).first ?? "")
         }
@@ -387,7 +425,7 @@ final class ScanViewModel: ObservableObject {
             } else if !tail.isEmpty {
                 return nil
             }
-            return host
+            return AddressTarget(address: host, port: tail.hasPrefix(":") ? UInt16(String(tail.dropFirst())) : nil)
         }
 
         if value.contains(":") {
@@ -396,22 +434,22 @@ final class ScanViewModel: ObservableObject {
                 // IPv6 without brackets: normalize to the bare IPv6 literal, dropping any trailing port-like token if present.
                 let candidate = String(value)
                 guard isValidIP(candidate) else { return nil }
-                return candidate
+                return AddressTarget(address: candidate, port: nil)
             }
             if components.count == 2 {
                 let host = String(components[0])
                 let portString = String(components[1])
                 guard !host.isEmpty, let port = Int(portString), (1...65535).contains(port) else {
-                    if isValidIP(value) { return value }
+                    if isValidIP(value) { return AddressTarget(address: value, port: nil) }
                     return nil
                 }
-                return host
+                return AddressTarget(address: host, port: UInt16(port))
             }
         }
 
         guard !value.contains("/") else { return nil }
         guard isValidIP(value) else { return nil }
-        return value
+        return AddressTarget(address: value, port: nil)
     }
 
     private func isValidIP(_ value: String) -> Bool {
@@ -459,12 +497,12 @@ struct ScanView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack {
-                Label("小鱼优选", systemImage: "fish").font(.caption.bold()).foregroundStyle(.cyan)
+                Label("小鱼优选", systemImage: "fish.fill").font(.caption.bold()).foregroundStyle(.cyan)
                 Spacer()
                 Text("\(model.totalCount.formatted()) 个地址").font(.caption.monospaced()).foregroundStyle(.white.opacity(0.45))
             }
-            Text("小鱼优选\nCloudflare 节点精测").font(.system(size: 32, weight: .bold, design: .rounded)).foregroundStyle(.white)
-            Text("自动识别地区 · IPv4 / IPv6 · 自定义 IP / 端口一键复制").font(.subheadline).foregroundStyle(.white.opacity(0.58))
+            Text("小鱼优选\nCloudflare 节点优选").font(.system(size: 32, weight: .bold, design: .rounded)).foregroundStyle(.white)
+            Text("测速只用于筛选排序 · 复制结果不含延迟 · 自动保留端口").font(.subheadline).foregroundStyle(.white.opacity(0.58))
         }
     }
 
@@ -485,6 +523,7 @@ struct ScanView: View {
             HStack(spacing: 10) {
                 smallButton("粘贴", icon: "doc.on.clipboard") { model.pasteFromClipboard() }
                 smallButton("导入文件", icon: "arrow.up.doc") { showImporter = true }
+                smallButton(model.isUpdatingPool ? "更新中" : "更新 IP 库", icon: "arrow.triangle.2.circlepath") { model.updateFromGitHub() }
                 smallButton("清空", icon: "trash") { model.inputText = "" }
                 Spacer()
             }
@@ -532,7 +571,7 @@ struct ScanView: View {
     private var resultPanel: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("测速结果").font(.title3.bold()).foregroundStyle(.white)
+                Text("优选结果").font(.title3.bold()).foregroundStyle(.white)
                 Spacer()
                 Text("最快 \(model.fastestLatency.map { "\($0) ms" } ?? "--")").font(.caption.monospaced()).foregroundStyle(.cyan)
             }
@@ -570,13 +609,13 @@ struct ScanView: View {
         HStack(spacing: 10) {
             Text(rank < 10 ? "0\(rank)" : "\(rank)").font(.caption.monospacedDigit().bold()).foregroundStyle(rank < 4 ? .cyan : .white.opacity(0.35)).frame(width: 28)
             VStack(alignment: .leading, spacing: 3) {
-                Text(result.address).font(.body.monospaced().weight(.semibold)).foregroundStyle(.white)
+                Text(result.endpoint).font(.body.monospaced().weight(.semibold)).foregroundStyle(.white)
                 Text("\(result.family.rawValue) · \(result.region ?? "地区识别中") · \(result.isAvailable ? "\(model.mode.rawValue)成功" : (result.error ?? "失败"))").font(.caption).foregroundStyle(.white.opacity(0.45))
             }
             Spacer()
             Text(result.displayLatency).font(.subheadline.monospacedDigit().bold()).foregroundStyle(result.isAvailable ? (result.latency! < 100 ? .green : .orange) : .white.opacity(0.35))
             Button {
-                UIPasteboard.general.string = result.address
+                UIPasteboard.general.string = result.endpoint
                 copied = true
             } label: { Image(systemName: "doc.on.doc") }.buttonStyle(.plain).foregroundStyle(.white.opacity(0.5))
         }

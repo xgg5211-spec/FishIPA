@@ -35,6 +35,15 @@ jobs:
             --workers 300 \
             --timeout 1.5
 
+      - name: Validate clean EdgeTunnel entries
+        run: |
+          test -s data/edgetunnel/ADD.txt
+          if grep -Eq '#|ms' data/edgetunnel/ADD.txt; then
+            echo "ADD.txt must contain clean IP:port entries without latency remarks"
+            exit 1
+          fi
+          grep -Eq '^((([0-9]{1,3}\.){3}[0-9]{1,3})|\[[0-9A-Fa-f:]+\]):[0-9]{1,5}$' data/edgetunnel/ADD.txt
+
       - name: Commit updated IP pool
         run: |
           git config user.name "github-actions[bot]"
