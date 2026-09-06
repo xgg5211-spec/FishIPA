@@ -1,4 +1,4 @@
-name: Release FishIPA
+name: Release FishIPA for TrollStore
 
 on:
   workflow_dispatch:
@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  release-ipa:
     runs-on: macos-15
     steps:
       - name: Checkout
@@ -25,7 +25,7 @@ jobs:
       - name: Validate project metadata
         run: plutil -lint ExportOptions.plist FishIPA/Resources/Info.plist FishIPA/FishIPA.entitlements
 
-      - name: Build archive
+      - name: Build unsigned IPA
         run: |
           xcodebuild archive \
             -project FishIPA.xcodeproj \
@@ -36,20 +36,15 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO
 
-      - name: Package IPA for TrollStore / AltStore
-        run: |
           mkdir -p build/ipa/Payload
           cp -R build/FishIPA.xcarchive/Products/Applications/FishIPA.app build/ipa/Payload/FishIPA.app
           /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string 小鱼优选" build/ipa/Payload/FishIPA.app/Info.plist
           /usr/bin/ditto -c -k --sequesterRsrc --keepParent build/ipa/Payload build/FishIPA.ipa
 
-      - name: Create GitHub Release
+      - name: Upload IPA as GitHub release asset
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name || format('v{0}', github.run_number) }}
-          name: 小鱼优选 ${{ github.ref_name || github.run_number }}
-          files: |
-            build/FishIPA.ipa
+          files: build/FishIPA.ipa
           draft: false
           prerelease: false
           generate_release_notes: true
