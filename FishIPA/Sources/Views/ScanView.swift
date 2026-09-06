@@ -64,7 +64,7 @@ private enum ProbeError: LocalizedError {
 }
 
 private enum NetworkProbe {
-    static func measure(address: String, port: UInt16, mode: ProbeMode, timeout: TimeInterval) async -> ScanResult {
+    static func measure(address: String, port: UInt16, mode: ProbeMode, timeout: TimeInterval, shouldMeasureBandwidth: Bool) async -> ScanResult {
         let family: AddressFamily = address.contains(":") ? .ipv6 : .ipv4
         let start = DispatchTime.now().uptimeNanoseconds
         let parameters: NWParameters
@@ -86,7 +86,7 @@ private enum NetworkProbe {
             } else {
                 region = nil
             }
-            let bandwidth = mode == .tls ? try? await measureBandwidth(address: address, port: port, parameters: parameters, timeout: timeout) : nil
+            let bandwidth = mode == .tls && shouldMeasureBandwidth ? try? await measureBandwidth(address: address, port: port, parameters: parameters, timeout: min(timeout, 3)) : nil
             connection.cancel()
             return ScanResult(id: "\(address):\(port)", address: address, port: port, family: family, latency: elapsed, bandwidthMbps: bandwidth, region: region, error: nil)
         } catch {
@@ -99,13 +99,19 @@ private enum NetworkProbe {
         defer { connection.cancel() }
         let request = "GET /__down?bytes=131072 HTTP/1.1\r\nHost: speed.cloudflare.com\r\nConnection: close\r\n\r\n"
         let started = DispatchTime.now().uptimeNanoseconds
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+        let received = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Int, Error>) in
+            var buffer = Data()
             connection.send(content: request.data(using: .utf8), completion: .contentProcessed { error in
                 if let error { continuation.resume(throwing: error); return }
                 func receive() {
                     connection.receive(minimumIncompleteLength: 1, maximumLength: 16_384) { content, _, complete, error in
                         if let error { continuation.resume(throwing: error); return }
-                        if complete || content == nil { continuation.resume(); return }
+                        if let content { buffer.append(content) }
+                        if complete || content == nil {
+                            let headerEnd = buffer.range(of: Data("\r\n\r\n".utf8))?.upperBound ?? buffer.startIndex
+                            continuation.resume(returning: max(buffer.count - buffer.distance(from: buffer.startIndex, to: headerEnd), 0))
+                            return
+                        }
                         receive()
                     }
                 }
@@ -113,7 +119,8 @@ private enum NetworkProbe {
             })
         }
         let elapsed = max(Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000_000, 0.001)
-        return 0.131072 * 8 / elapsed
+        guard received > 0 else { throw ProbeError.timeout }
+        return Double(received) * 8 / elapsed / 1_000_000
     }
 
     private static func connect(host: NWEndpoint.Host, port: NWEndpoint.Port, parameters: NWParameters, timeout: TimeInterval) async throws -> NWConnection {
@@ -304,35 +311,51 @@ final class ScanViewModel: ObservableObject {
         }
 
         let requestedPort = UInt16(portText)
-        let concurrency = min(max(Int(concurrencyText) ?? 80, 1), 200)
+        let concurrency = min(max(Int(concurrencyText) ?? 80, 1), 1000)
         let timeout = min(max(Double(timeoutText) ?? 2, 0.5), 10)
         let selectedMode = mode
-        let scanTargets = targets.flatMap { target -> [AddressTarget] in
-            guard target.port == nil, requestedPort == nil else { return [target] }
-            return automaticPorts.map { AddressTarget(address: target.address, port: $0) }
-        }
+        let measureBandwidth = max(Double(expectedBandwidthText) ?? 0, 0) > 0
         let currentID = UUID()
         scanID = currentID
         results = []
         scannedCount = 0
-        totalCount = scanTargets.count
+        totalCount = targets.count
         isScanning = true
-        statusMessage = "正在进行 \(selectedMode.rawValue)，自动端口共 \(scanTargets.count) 个任务"
+        statusMessage = "正在进行 \(selectedMode.rawValue)，并发上限 \(concurrency)，自动端口会取最快成功端口"
 
         scanTask = Task { [weak self] in
-            var pending = scanTargets
+            var pending = targets
             while !pending.isEmpty {
                 guard !Task.isCancelled else { return }
                 let batch = Array(pending.prefix(concurrency))
                 pending.removeFirst(batch.count)
-                let batchResults = await withTaskGroup(of: ScanResult.self, returning: [ScanResult].self) { group in
+                let batchResults = await withTaskGroup(of: ScanResult?.self, returning: [ScanResult].self) { group in
                     for target in batch {
                         group.addTask {
-                            await NetworkProbe.measure(address: target.address, port: target.port ?? requestedPort ?? 443, mode: selectedMode, timeout: timeout)
+                            if let explicitPort = target.port ?? requestedPort {
+                                return await NetworkProbe.measure(address: target.address, port: explicitPort, mode: selectedMode, timeout: timeout, shouldMeasureBandwidth: measureBandwidth)
+                            }
+                            let portResults = await withTaskGroup(of: ScanResult.self, returning: [ScanResult].self) { portGroup in
+                                for candidatePort in automaticPorts {
+                                    portGroup.addTask {
+                                        await NetworkProbe.measure(address: target.address, port: candidatePort, mode: selectedMode, timeout: timeout, shouldMeasureBandwidth: false)
+                                    }
+                                }
+                                var values: [ScanResult] = []
+                                for await value in portGroup { values.append(value) }
+                                return values
+                            }
+                            guard let best = portResults.filter(\.isAvailable).min(by: { ($0.latency ?? .greatestFiniteMagnitude) < ($1.latency ?? .greatestFiniteMagnitude) }) else {
+                                return portResults.first
+                            }
+                            if measureBandwidth {
+                                return await NetworkProbe.measure(address: best.address, port: best.port, mode: selectedMode, timeout: timeout, shouldMeasureBandwidth: true)
+                            }
+                            return best
                         }
                     }
                     var values: [ScanResult] = []
-                    for await value in group { values.append(value) }
+                    for await value in group where value != nil { values.append(value!) }
                     return values
                 }
                 guard let self, self.scanID == currentID else { return }
