@@ -218,7 +218,7 @@ final class ScanViewModel: ObservableObject {
                 let batch = Array(pending.prefix(concurrency))
                 pending.removeFirst(batch.count)
                 let batchResults = await withTaskGroup(of: ScanResult.self, returning: [ScanResult].self) { group in
-                    for address in batch {
+                    for target in batch {
                         group.addTask {
                             await NetworkProbe.measure(address: target.address, port: target.port ?? port, mode: selectedMode, timeout: timeout)
                         }
