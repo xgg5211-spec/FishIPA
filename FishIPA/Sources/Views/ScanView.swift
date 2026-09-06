@@ -37,11 +37,13 @@ struct ScanResult: Identifiable, Hashable {
     let port: UInt16
     let family: AddressFamily
     let latency: Double?
+    let bandwidthMbps: Double?
     let region: String?
     let error: String?
 
     var isAvailable: Bool { latency != nil }
     var displayLatency: String { latency.map { String(format: "%.0f ms", $0) } ?? "失败" }
+    var displayBandwidth: String { bandwidthMbps.map { String(format: "%.1f Mbps", $0) } ?? "带宽未测" }
     var endpoint: String {
         let host = family == .ipv6 ? "[\(address)]" : address
         return "\(host):\(port)"
@@ -81,11 +83,34 @@ private enum NetworkProbe {
             } else {
                 region = nil
             }
+            let bandwidth = mode == .tls ? try? await measureBandwidth(address: address, port: port, parameters: parameters, timeout: timeout) : nil
             connection.cancel()
-            return ScanResult(id: "\(address):\(port)", address: address, port: port, family: family, latency: elapsed, region: region, error: nil)
+            return ScanResult(id: "\(address):\(port)", address: address, port: port, family: family, latency: elapsed, bandwidthMbps: bandwidth, region: region, error: nil)
         } catch {
-            return ScanResult(id: "\(address):\(port)", address: address, port: port, family: family, latency: nil, region: nil, error: error.localizedDescription)
+            return ScanResult(id: "\(address):\(port)", address: address, port: port, family: family, latency: nil, bandwidthMbps: nil, region: nil, error: error.localizedDescription)
         }
+    }
+
+    private static func measureBandwidth(address: String, port: UInt16, parameters: NWParameters, timeout: TimeInterval) async throws -> Double {
+        let connection = try await connect(host: NWEndpoint.Host(address), port: NWEndpoint.Port(rawValue: port) ?? 443, parameters: parameters, timeout: timeout)
+        defer { connection.cancel() }
+        let request = "GET /__down?bytes=131072 HTTP/1.1\r\nHost: speed.cloudflare.com\r\nConnection: close\r\n\r\n"
+        let started = DispatchTime.now().uptimeNanoseconds
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            connection.send(content: request.data(using: .utf8), completion: .contentProcessed { error in
+                if let error { continuation.resume(throwing: error); return }
+                func receive() {
+                    connection.receive(minimumIncompleteLength: 1, maximumLength: 16_384) { content, _, complete, error in
+                        if let error { continuation.resume(throwing: error); return }
+                        if complete || content == nil { continuation.resume(); return }
+                        receive()
+                    }
+                }
+                receive()
+            })
+        }
+        let elapsed = max(Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000_000, 0.001)
+        return 0.131072 * 8 / elapsed
     }
 
     private static func connect(host: NWEndpoint.Host, port: NWEndpoint.Port, parameters: NWParameters, timeout: TimeInterval) async throws -> NWConnection {
@@ -178,6 +203,8 @@ final class ScanViewModel: ObservableObject {
     @Published var countryCode = ""
     @Published var selectedCountry = "全部国家"
     @Published var preferredCountText = "20"
+    @Published var selectedPort = "全部端口"
+    @Published var expectedBandwidthText = "0"
     @Published var useOfficialIPv4 = true
     @Published var useOfficialIPv6 = true
     @Published var officialCIDR = ""
@@ -204,6 +231,10 @@ final class ScanViewModel: ObservableObject {
         ["全部国家"] + countryCounts.keys.sorted()
     }
 
+    var portOptions: [String] {
+        ["全部端口"] + Set(results.map { String($0.port) }).sorted { (Int($0) ?? 0) < (Int($1) ?? 0) }
+    }
+
     var countryCounts: [String: Int] {
         results.reduce(into: [String: Int]()) { counts, result in
             guard let country = result.region?.split(separator: "·").first?.trimmingCharacters(in: .whitespaces), !country.isEmpty else { return }
@@ -220,6 +251,8 @@ final class ScanViewModel: ObservableObject {
         results.filter { result in
             (family == .all || result.family == family) &&
             (!onlyAvailable || result.isAvailable) &&
+            (selectedPort == "全部端口" || selectedPort == String(result.port)) &&
+            (Double(expectedBandwidthText) ?? 0 <= (result.bandwidthMbps ?? 0)) &&
             matchesRegion(result.region) &&
             (searchText.isEmpty || result.address.localizedCaseInsensitiveContains(searchText))
         }
@@ -707,6 +740,18 @@ struct ScanView: View {
                     .textFieldStyle(.roundedBorder)
                     .autocorrectionDisabled()
             }
+            VStack(alignment: .leading, spacing: 8) {
+                Text("结果筛选").font(.caption).foregroundStyle(.white.opacity(0.55))
+                HStack {
+                    Picker("端口", selection: $model.selectedPort) {
+                        ForEach(model.portOptions, id: \.self) { port in
+                            Text(port).tag(port)
+                        }
+                    }
+                    .tint(.cyan)
+                    settingField("期待带宽 Mbps", text: $model.expectedBandwidthText, width: 120)
+                }
+            }
             Button {
                 model.isScanning ? model.stopScan() : model.startScan()
             } label: {
@@ -770,7 +815,7 @@ struct ScanView: View {
             Text(rank < 10 ? "0\(rank)" : "\(rank)").font(.caption.monospacedDigit().bold()).foregroundStyle(rank < 4 ? .cyan : .white.opacity(0.35)).frame(width: 28)
             VStack(alignment: .leading, spacing: 3) {
                 Text(result.endpoint).font(.body.monospaced().weight(.semibold)).foregroundStyle(.white)
-                Text("\(result.family.rawValue) · \(result.region ?? "地区识别中") · \(result.isAvailable ? "\(model.mode.rawValue)成功" : (result.error ?? "失败"))").font(.caption).foregroundStyle(.white.opacity(0.45))
+                Text("\(result.family.rawValue) · \(result.region ?? "地区识别中") · \(result.displayBandwidth) · \(result.isAvailable ? "\(model.mode.rawValue)成功" : (result.error ?? "失败"))").font(.caption).foregroundStyle(.white.opacity(0.45))
             }
             Spacer()
             Text(result.displayLatency).font(.subheadline.monospacedDigit().bold()).foregroundStyle(result.isAvailable ? (result.latency! < 100 ? .green : .orange) : .white.opacity(0.35))
