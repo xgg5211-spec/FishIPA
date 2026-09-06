@@ -4,10 +4,10 @@ struct ContentView: View {
     var body: some View {
         NavigationStack {
             ScanView()
-                .navigationTitle("鱼儿优选")
+                .navigationTitle("小鱼优选")
                 .navigationBarTitleDisplayMode(.inline)
         }
-        .tint(.blue)
+        .tint(.cyan)
     }
 }
 

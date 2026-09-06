@@ -22,8 +22,8 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.fishipa.app
-        PRODUCT_NAME: FishIPA
-        INFOPLIST_KEY_CFBundleDisplayName: "鱼儿优选"
+        PRODUCT_NAME: "小鱼优选"
+        INFOPLIST_KEY_CFBundleDisplayName: "小鱼优选"
         INFOPLIST_FILE: FishIPA/Resources/Info.plist
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_ENTITLEMENTS: FishIPA/FishIPA.entitlements

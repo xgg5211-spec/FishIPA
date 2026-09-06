@@ -453,12 +453,12 @@ struct ScanView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack {
-                Label("FISH IPA", systemImage: "water.waves").font(.caption.bold()).foregroundStyle(.cyan)
+                Label("小鱼优选", systemImage: "fish").font(.caption.bold()).foregroundStyle(.cyan)
                 Spacer()
                 Text("\(model.totalCount.formatted()) 个地址").font(.caption.monospaced()).foregroundStyle(.white.opacity(0.45))
             }
-            Text("Cloudflare 节点\n精测工具").font(.system(size: 32, weight: .bold, design: .rounded)).foregroundStyle(.white)
-            Text("TLS 握手、IPv4 / IPv6、大批量 IP 一次处理").font(.subheadline).foregroundStyle(.white.opacity(0.58))
+            Text("小鱼优选\nCloudflare 节点精测").font(.system(size: 32, weight: .bold, design: .rounded)).foregroundStyle(.white)
+            Text("自动识别地区 · IPv4 / IPv6 · 自定义 IP / 端口一键复制").font(.subheadline).foregroundStyle(.white.opacity(0.58))
         }
     }
 
