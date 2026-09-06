@@ -176,6 +176,8 @@ final class ScanViewModel: ObservableObject {
     @Published private(set) var isUpdatingPool = false
     @Published var regionFilter: RegionFilter = .all
     @Published var countryCode = ""
+    @Published var selectedCountry = "全部国家"
+    @Published var preferredCountText = "20"
     @Published var useOfficialIPv4 = true
     @Published var useOfficialIPv6 = true
     @Published var officialCIDR = ""
@@ -198,6 +200,22 @@ final class ScanViewModel: ObservableObject {
     var availableCount: Int { results.reduce(into: 0) { if $1.isAvailable { $0 += 1 } } }
     var fastestLatency: Int? { results.compactMap(\.latency).min().map { Int($0.rounded()) } }
 
+    var countryOptions: [String] {
+        ["全部国家"] + countryCounts.keys.sorted()
+    }
+
+    var countryCounts: [String: Int] {
+        results.reduce(into: [String: Int]()) { counts, result in
+            guard let country = result.region?.split(separator: "·").first?.trimmingCharacters(in: .whitespaces), !country.isEmpty else { return }
+            counts[country, default: 0] += 1
+        }
+    }
+
+    var preferredResults: [ScanResult] {
+        let count = max(Int(preferredCountText) ?? 20, 1)
+        return filteredResults.prefix(count).map { $0 }
+    }
+
     var filteredResults: [ScanResult] {
         results.filter { result in
             (family == .all || result.family == family) &&
@@ -209,6 +227,9 @@ final class ScanViewModel: ObservableObject {
 
     private func matchesRegion(_ region: String?) -> Bool {
         let value = region?.uppercased() ?? ""
+        if selectedCountry != "全部国家" {
+            return value.split(separator: "·").first?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == selectedCountry.uppercased()
+        }
         let requestedCountry = countryCode.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         if !requestedCountry.isEmpty && !value.split(separator: "·").contains(where: { $0.trimmingCharacters(in: .whitespaces).hasPrefix(requestedCountry) }) {
             return false
@@ -374,12 +395,16 @@ final class ScanViewModel: ObservableObject {
             let base = ipv4.reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
             let mask: UInt32 = prefix == 0 ? 0 : UInt32.max << UInt32(32 - prefix)
             let network = base & mask
-            let host = min(network + 1, UInt32.max)
-            let address = [host >> 24, host >> 16, host >> 8, host].map { String($0 & 255) }.joined(separator: ".")
-            return [AddressTarget(address: address, port: 443)]
+            let hostCount = max(min(UInt64(1) << UInt64(min(32 - prefix, 4)), 16), 1)
+            return (1...hostCount).map { offset in
+                let host = min(UInt64(network) + offset, UInt64(UInt32.max))
+                let address = [host >> 24, host >> 16, host >> 8, host].map { String($0 & 255) }.joined(separator: ".")
+                return AddressTarget(address: address, port: 443)
+            }
         }
         if parts[0].contains(":") {
-            return [AddressTarget(address: parts[0], port: 443)]
+            let base = parts[0].hasSuffix("::") ? String(parts[0].dropLast(2)) : parts[0]
+            return (1...8).map { AddressTarget(address: "\(base)::\($0)", port: 443) }
         }
         return []
     }
@@ -462,7 +487,7 @@ final class ScanViewModel: ObservableObject {
     }
 
     func copyVisibleResults() {
-        UIPasteboard.general.string = filteredResults.map(\.endpoint).joined(separator: "\n")
+        UIPasteboard.general.string = preferredResults.map(\.endpoint).joined(separator: "\n")
     }
 
     func copyFastestResult() -> Bool {
@@ -473,7 +498,7 @@ final class ScanViewModel: ObservableObject {
     }
 
     var exportText: String {
-        filteredResults.map(\.endpoint).joined(separator: "\n")
+        preferredResults.map(\.endpoint).joined(separator: "\n")
     }
 
     private func parseTargets(_ text: String) -> [AddressTarget] {
@@ -487,6 +512,10 @@ final class ScanViewModel: ObservableObject {
                 .replacingOccurrences(of: "http://", with: "")
                 .components(separatedBy: CharacterSet(charactersIn: " ,;，；|\t\n\r\"'(){}<>"))
             for rawValue in splitTokens {
+                if rawValue.contains("/") {
+                    results.append(contentsOf: Self.sampleTargets(from: rawValue))
+                    continue
+                }
                 guard let candidate = normalizeAddressCandidate(rawValue) else { continue }
                 guard unique.insert(candidate).inserted else { continue }
                 results.append(candidate)
@@ -659,6 +688,14 @@ struct ScanView: View {
                     .textFieldStyle(.roundedBorder)
                     .textInputAutocapitalization(.characters)
                     .autocorrectionDisabled()
+                Picker("国家", selection: $model.selectedCountry) {
+                    ForEach(model.countryOptions, id: \.self) { country in
+                        Text("\(country) (\(model.countryCounts[country] ?? 0))").tag(country)
+                    }
+                }
+                .tint(.cyan)
+                Text("国家数量按 TLS 识别结果统计").font(.caption2).foregroundStyle(.white.opacity(0.4))
+                settingField("每国优选数量", text: $model.preferredCountText, width: 110)
             }
             VStack(alignment: .leading, spacing: 8) {
                 Text("Cloudflare 官方网段").font(.caption).foregroundStyle(.white.opacity(0.55))
@@ -709,19 +746,19 @@ struct ScanView: View {
                 Button {
                     model.copyVisibleResults(); copied = true
                 } label: { Image(systemName: copied ? "checkmark" : "square.on.square") }
-                .buttonStyle(.bordered).tint(.cyan).disabled(model.filteredResults.isEmpty)
+                .buttonStyle(.bordered).tint(.cyan).disabled(model.preferredResults.isEmpty)
                 ShareLink(item: model.exportText) { Image(systemName: "square.and.arrow.up") }
-                    .buttonStyle(.bordered).tint(.cyan).disabled(model.filteredResults.isEmpty)
+                    .buttonStyle(.bordered).tint(.cyan).disabled(model.preferredResults.isEmpty)
             }
             if model.filteredResults.isEmpty {
                 Text("没有结果。粘贴 IP 地址后开始扫描.")
                     .font(.subheadline).foregroundStyle(.white.opacity(0.45)).padding(.vertical, 24)
             } else {
-                ForEach(Array(model.filteredResults.prefix(500).enumerated()), id: \.element.id) { index, result in
+                ForEach(Array(model.preferredResults.prefix(500).enumerated()), id: \.element.id) { index, result in
                     resultRow(result, rank: index + 1)
                 }
                 if model.filteredResults.count > 500 {
-                    Text("已显示前 500 条，复制和导出仍包含全部 \(model.filteredResults.count) 条结果")
+                    Text("当前筛选共 \(model.filteredResults.count) 条，已按每国数量显示优选结果")
                         .font(.caption).foregroundStyle(.white.opacity(0.45))
                 }
             }
