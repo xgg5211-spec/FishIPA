@@ -65,6 +65,14 @@ jobs:
           path: build/xcodebuild.log
           if-no-files-found: ignore
 
+      - name: Publish compiler errors
+        if: failure()
+        run: |
+          {
+            echo "## xcodebuild diagnostics"
+            grep -E "error:|fatal error:|BUILD FAILED" build/xcodebuild.log || true
+          } >> "$GITHUB_STEP_SUMMARY"
+
   retry-on-failure:
     needs: build
     if: ${{ failure() && github.run_attempt < 2 }}
