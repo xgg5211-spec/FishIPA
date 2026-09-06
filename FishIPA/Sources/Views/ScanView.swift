@@ -79,14 +79,16 @@ private enum NetworkProbe {
 
         do {
             let connection = try await connect(host: NWEndpoint.Host(address), port: NWEndpoint.Port(rawValue: port) ?? 443, parameters: parameters, timeout: timeout)
-            let elapsed = Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000
-            let region: String?
+            let trace: (region: String?, elapsedMilliseconds: Double)?
             if mode == .tls {
-                region = try? await traceRegion(connection, timeout: timeout)
+                trace = try? await traceRegion(connection, startedAt: start, timeout: timeout)
             } else {
-                region = nil
+                trace = nil
             }
-            let bandwidth = mode == .tls && shouldMeasureBandwidth ? try? await measureBandwidth(address: address, port: port, parameters: parameters, timeout: min(timeout, 3)) : nil
+            guard mode != .tls || trace != nil else { throw ProbeError.timeout }
+            let elapsed = trace?.elapsedMilliseconds ?? Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000
+            let region = trace?.region
+            let bandwidth = mode == .tls && shouldMeasureBandwidth ? try? await measureBandwidth(address: address, port: port, parameters: parameters, timeout: min(timeout, 1.5)) : nil
             connection.cancel()
             return ScanResult(id: "\(address):\(port)", address: address, port: port, family: family, latency: elapsed, bandwidthMbps: bandwidth, region: region, error: nil)
         } catch {
@@ -97,7 +99,7 @@ private enum NetworkProbe {
     private static func measureBandwidth(address: String, port: UInt16, parameters: NWParameters, timeout: TimeInterval) async throws -> Double {
         let connection = try await connect(host: NWEndpoint.Host(address), port: NWEndpoint.Port(rawValue: port) ?? 443, parameters: parameters, timeout: timeout)
         defer { connection.cancel() }
-        let request = "GET /__down?bytes=131072 HTTP/1.1\r\nHost: speed.cloudflare.com\r\nConnection: close\r\n\r\n"
+        let request = "GET /__down?bytes=32768 HTTP/1.1\r\nHost: speed.cloudflare.com\r\nConnection: close\r\n\r\n"
         let started = DispatchTime.now().uptimeNanoseconds
         let received = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Int, Error>) in
             var buffer = Data()
@@ -153,9 +155,9 @@ private enum NetworkProbe {
         }
     }
 
-    private static func traceRegion(_ connection: NWConnection, timeout: TimeInterval) async throws -> String? {
+    private static func traceRegion(_ connection: NWConnection, startedAt: UInt64, timeout: TimeInterval) async throws -> (String?, Double) {
         let request = "GET /cdn-cgi/trace HTTP/1.1\r\nHost: speed.cloudflare.com\r\nConnection: close\r\n\r\n"
-        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<String?, Error>) in
+        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<(String?, Double), Error>) in
             let lock = NSLock()
             var completed = false
             func finish(_ result: Result<String?, Error>) {
@@ -178,7 +180,8 @@ private enum NetworkProbe {
                                 if parts.count == 2 { result[parts[0]] = parts[1] }
                             }
                             let label = [values["loc"], values["colo"]].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
-                            finish(.success(label.isEmpty ? nil : label))
+                            let elapsed = Double(DispatchTime.now().uptimeNanoseconds - startedAt) / 1_000_000
+                            finish(.success((label.isEmpty ? nil : label, elapsed)))
                             return
                         }
                         if isComplete || buffer.count > 64 * 1024 { finish(.success(nil)); return }
@@ -188,7 +191,7 @@ private enum NetworkProbe {
                 receiveMore()
             })
             DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + timeout) {
-                finish(.success(nil))
+                finish(.failure(ProbeError.timeout))
             }
         }
     }
@@ -315,7 +318,7 @@ final class ScanViewModel: ObservableObject {
         let concurrency = min(max(Int(concurrencyText) ?? 80, 1), 1000)
         let timeout = min(max(Double(timeoutText) ?? 2, 0.5), 10)
         let selectedMode = mode
-        let measureBandwidth = max(Double(expectedBandwidthText) ?? 0, 0) > 0
+        let measureBandwidth = selectedMode == .tls
         let currentID = UUID()
         scanID = currentID
         results = []
@@ -701,7 +704,7 @@ struct ScanView: View {
                 Text("\(model.totalCount.formatted()) 个地址").font(.caption.monospaced()).foregroundStyle(.white.opacity(0.45))
             }
             Text("小鱼优选\nCloudflare 节点优选").font(.system(size: 32, weight: .bold, design: .rounded)).foregroundStyle(.white)
-            Text("测速只用于筛选排序 · 复制结果不含延迟 · 自动保留端口").font(.subheadline).foregroundStyle(.white.opacity(0.58))
+            Text("真实 TLS 延迟 · 自动带宽 · 复制结果不含延迟").font(.subheadline).foregroundStyle(.white.opacity(0.58))
         }
     }
 
