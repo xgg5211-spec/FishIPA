@@ -222,6 +222,7 @@ final class ScanViewModel: ObservableObject {
     @Published var useOfficialIPv4 = true
     @Published var useOfficialIPv6 = true
     @Published var officialCIDR = ""
+    @Published var rangeSamplesText = "16"
 
     private var scanTask: Task<Void, Never>?
     private var scanID = UUID()
@@ -239,6 +240,10 @@ final class ScanViewModel: ObservableObject {
     }
 
     var availableCount: Int { results.reduce(into: 0) { if $1.isAvailable { $0 += 1 } } }
+    var availablePercentage: Int {
+        guard totalCount > 0 else { return 0 }
+        return Int((Double(availableCount) / Double(totalCount) * 100).rounded())
+    }
     var fastestLatency: Int? { results.compactMap(\.latency).min().map { Int($0.rounded()) } }
 
     var countryOptions: [String] {
@@ -376,6 +381,16 @@ final class ScanViewModel: ObservableObject {
         isScanning = false
     }
 
+    func keepAvailableResults() {
+        let available = filteredResults.filter(\.isAvailable)
+        guard !available.isEmpty else {
+            statusMessage = "当前筛选没有可保留的可用 IP"
+            return
+        }
+        inputText = available.map(\.endpoint).joined(separator: "\n")
+        statusMessage = "已自动保留可用 IP：\(available.count) 个，可继续复测"
+    }
+
     func pasteFromClipboard() {
         let pasteboard = UIPasteboard.general
         if let value = pasteboard.string, !value.isEmpty {
@@ -442,7 +457,7 @@ final class ScanViewModel: ObservableObject {
                     let familyEnabled = isIPv6 ? self?.useOfficialIPv6 == true : self?.useOfficialIPv4 == true
                     let requestedCIDR = self?.officialCIDR.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                     return familyEnabled && (requestedCIDR.isEmpty || requestedCIDR == cidr)
-                }.flatMap(Self.sampleTargets(from:))
+                }.flatMap { Self.sampleTargets(from: $0, limit: max(Int(self?.rangeSamplesText ?? "16") ?? 16, 1)) }
                 guard !targets.isEmpty else { throw URLError(.cannotParseResponse) }
                 self?.inputText = targets.map { target in
                     let host = target.address.contains(":") ? "[\(target.address)]" : target.address
@@ -456,7 +471,7 @@ final class ScanViewModel: ObservableObject {
         }
     }
 
-    private static func sampleTargets(from cidr: String) -> [AddressTarget] {
+    private static func sampleTargets(from cidr: String, limit: Int = 16) -> [AddressTarget] {
         let parts = cidr.split(separator: "/", maxSplits: 1).map(String.init)
         guard parts.count == 2, let prefix = Int(parts[1]), (0...128).contains(prefix) else { return [] }
         let ipv4 = parts[0].split(separator: ".").compactMap { UInt8($0) }
@@ -464,7 +479,7 @@ final class ScanViewModel: ObservableObject {
             let base = ipv4.reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
             let mask: UInt32 = prefix == 0 ? 0 : UInt32.max << UInt32(32 - prefix)
             let network = base & mask
-            let hostCount = max(min(UInt64(1) << UInt64(min(32 - prefix, 4)), 16), 1)
+            let hostCount = max(min(UInt64(1) << UInt64(min(32 - prefix, 8)), UInt64(limit)), 1)
             return (1...hostCount).map { offset in
                 let host = min(UInt64(network) + offset, UInt64(UInt32.max))
                 let address = [host >> 24, host >> 16, host >> 8, host].map { String($0 & 255) }.joined(separator: ".")
@@ -473,7 +488,7 @@ final class ScanViewModel: ObservableObject {
         }
         if parts[0].contains(":") {
             let base = parts[0].hasSuffix("::") ? String(parts[0].dropLast(2)) : parts[0]
-            return (1...8).map { AddressTarget(address: "\(base)::\($0)", port: 443) }
+            return (1...max(min(limit, 64), 1)).map { AddressTarget(address: "\(base)::\($0)", port: 443) }
         }
         return []
     }
@@ -586,7 +601,7 @@ final class ScanViewModel: ObservableObject {
                 .components(separatedBy: CharacterSet(charactersIn: " ,;，；|\t\n\r\"'(){}<>"))
             for rawValue in splitTokens {
                 if rawValue.contains("/") {
-                    results.append(contentsOf: Self.sampleTargets(from: rawValue))
+                    results.append(contentsOf: Self.sampleTargets(from: rawValue, limit: max(Int(rangeSamplesText) ?? 16, 1)))
                     continue
                 }
                 guard let candidate = normalizeAddressCandidate(rawValue) else { continue }
@@ -713,7 +728,7 @@ struct ScanView: View {
             HStack {
                 Label("IP 地址池", systemImage: "square.stack.3d.up.fill").font(.headline).foregroundStyle(.white)
                 Spacer()
-                Text("支持粘贴 10,000+ 行").font(.caption).foregroundStyle(.cyan)
+                Text("可用 \(model.availableCount)/\(model.totalCount) · \(model.availablePercentage)%").font(.caption.monospaced()).foregroundStyle(.cyan)
             }
             TextEditor(text: $model.inputText)
                 .font(.system(.footnote, design: .monospaced))
@@ -728,6 +743,7 @@ struct ScanView: View {
                 smallButton("导入文件", icon: "arrow.up.doc") { showImporter = true }
                 smallButton(model.isUpdatingPool ? "更新中" : "Cloudflare 官方", icon: "cloud.fill") { model.updateFromCloudflare() }
                 smallButton(model.isUpdatingPool ? "更新中" : "更新 IP 库", icon: "arrow.triangle.2.circlepath") { model.updateFromGitHub() }
+                smallButton("保留可用", icon: "checkmark.circle") { model.keepAvailableResults() }
                 smallButton("清空", icon: "trash") { model.inputText = "" }
                 }
             }
@@ -779,6 +795,7 @@ struct ScanView: View {
                 TextField("指定网段，可填 104.16.0.0/13", text: $model.officialCIDR)
                     .textFieldStyle(.roundedBorder)
                     .autocorrectionDisabled()
+                settingField("每个网段采样数", text: $model.rangeSamplesText, width: 120)
             }
             VStack(alignment: .leading, spacing: 8) {
                 Text("结果筛选").font(.caption).foregroundStyle(.white.opacity(0.55))
