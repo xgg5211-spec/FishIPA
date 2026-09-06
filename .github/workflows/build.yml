@@ -30,6 +30,7 @@ jobs:
 
       - name: Build archive
         run: |
+          set -o pipefail
           xcodebuild archive \
             -project FishIPA.xcodeproj \
             -scheme FishIPA \
@@ -37,7 +38,8 @@ jobs:
             -destination 'generic/platform=iOS' \
             -archivePath build/FishIPA.xcarchive \
             CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO
+            CODE_SIGNING_REQUIRED=NO \
+            2>&1 | tee build/xcodebuild.log
 
       - name: Package unsigned IPA for TrollStore
         run: |
@@ -53,6 +55,14 @@ jobs:
           path: |
             build/FishIPA.ipa
             build/FishIPA.xcarchive
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log-${{ github.run_id }}
+          path: build/xcodebuild.log
+          if-no-files-found: ignore
 
   retry-on-failure:
     needs: build

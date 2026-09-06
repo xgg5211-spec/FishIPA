@@ -55,9 +55,14 @@ private enum NetworkProbe {
         do {
             let connection = try await connect(host: NWEndpoint.Host(address), port: NWEndpoint.Port(rawValue: port) ?? 443, parameters: parameters, timeout: timeout)
             let elapsed = Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000
-            let region = mode == .tls ? try? await traceRegion(connection, timeout: timeout) : nil
+            let region: String?
+            if mode == .tls {
+                region = try? await traceRegion(connection, timeout: timeout)
+            } else {
+                region = nil
+            }
             connection.cancel()
-            return ScanResult(id: address, address: address, family: family, latency: elapsed, region: region ?? nil, error: nil)
+            return ScanResult(id: address, address: address, family: family, latency: elapsed, region: region, error: nil)
         } catch {
             return ScanResult(id: address, address: address, family: family, latency: nil, region: nil, error: error.localizedDescription)
         }
