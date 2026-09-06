@@ -15,6 +15,7 @@ on:
         default: "12000"
 
 permissions:
+  actions: write
   contents: write
 
 jobs:
@@ -76,3 +77,34 @@ jobs:
           name: edgetunnel-ip-pool-${{ github.run_number }}
           path: data/edgetunnel
           retention-days: 30
+
+  retry-on-failure:
+    needs: update
+    if: ${{ failure() && github.run_attempt < 2 }}
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: write
+      contents: write
+    steps:
+      - name: Download logs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p recovery-logs
+          gh run view "${{ github.run_id }}" --log-failed > recovery-logs/edgetunnel-failed.log || true
+
+      - name: Upload failed logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: edgetunnel-failure-logs-${{ github.run_id }}
+          path: recovery-logs
+          retention-days: 14
+          if-no-files-found: ignore
+
+      - name: Retry failed jobs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "EdgeTunnel update failed; retrying failed jobs for workflow ${{ github.run_id }}"
+          gh run rerun "${{ github.run_id }}" --failed --repo "${GITHUB_REPOSITORY}"
