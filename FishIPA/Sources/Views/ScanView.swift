@@ -68,7 +68,7 @@ private enum NetworkProbe {
             let lock = NSLock()
             var completed = false
 
-            func finish(_ result: Result<Void, Error>) {
+            func finish(_ result: Result<NWConnection, Error>) {
                 lock.lock()
                 guard !completed else { lock.unlock(); return }
                 completed = true
@@ -232,8 +232,7 @@ final class ScanViewModel: ObservableObject {
     func pasteFromClipboard() {
         let pasteboard = UIPasteboard.general
         if let value = pasteboard.string, !value.isEmpty {
-            inputText = value
-            statusMessage = "已粘贴文本 IP"
+            importText(value)
             return
         }
         guard let image = pasteboard.image else {
@@ -247,17 +246,38 @@ final class ScanViewModel: ObservableObject {
     func importFile(_ url: URL) {
         guard url.startAccessingSecurityScopedResource() else { return }
         defer { url.stopAccessingSecurityScopedResource() }
+
+        let type = (url.pathExtension.lowercased())
+        if ["png", "jpg", "jpeg", "heic", "heif", "webp"].contains(type) {
+            let image = UIImage(contentsOfFile: url.path)
+            guard let image else {
+                statusMessage = "图片文件无法读取"
+                return
+            }
+            statusMessage = "正在识别图片中的 IP..."
+            recognizeAddresses(in: image)
+            return
+        }
+
         if let value = try? String(contentsOf: url, encoding: .utf8), !value.isEmpty {
-            inputText = value
-            statusMessage = "已导入文件，共识别文本内容"
+            importText(value)
             return
         }
         if let data = try? Data(contentsOf: url), let value = String(data: data, encoding: .utf8), !value.isEmpty {
-            inputText = value
-            statusMessage = "已导入文件，共识别文本内容"
+            importText(value)
             return
         }
-        statusMessage = "文件不是可读取的文本格式"
+        statusMessage = "文件不是可读取的文本或图片格式"
+    }
+
+    private func importText(_ rawText: String) {
+        let addresses = parseAddresses(rawText)
+        guard !addresses.isEmpty else {
+            statusMessage = "未识别到有效 IP/端口地址，请检查文本内容"
+            return
+        }
+        inputText = addresses.joined(separator: "\n")
+        statusMessage = "已识别 \(addresses.count) 个有效地址，可直接开始扫描"
     }
 
     private func recognizeAddresses(in image: UIImage) {
@@ -313,18 +333,95 @@ final class ScanViewModel: ObservableObject {
     }
 
     private func parseAddresses(_ text: String) -> [String] {
-        let separators = CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: ",;，；"))
         var unique = Set<String>()
-        return text.components(separatedBy: separators).compactMap { raw in
-            var value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            if value.hasPrefix("[") && value.hasSuffix("]") { value.removeFirst(); value.removeLast() }
-            guard !value.isEmpty, !value.contains("/") else { return nil }
-            if let lastColon = value.lastIndex(of: ":"), value[..<lastColon].contains("."), Int(value[value.index(after: lastColon)...]) != nil {
-                value = String(value[..<lastColon])
+        var results: [String] = []
+
+        for rawLine in text.components(separatedBy: .newlines) {
+            let line = rawLine.replacingOccurrences(of: "\r", with: "")
+            let splitTokens = line
+                .replacingOccurrences(of: "https://", with: "")
+                .replacingOccurrences(of: "http://", with: "")
+                .components(separatedBy: CharacterSet(charactersIn: " ,;，；|\t\n\r\"'()[]{}<>"))
+            for rawValue in splitTokens {
+                guard let candidate = normalizeAddressCandidate(rawValue) else { continue }
+                guard unique.insert(candidate).inserted else { continue }
+                results.append(candidate)
             }
-            guard value.count <= 45, value.allSatisfy({ $0.isNumber || $0 == "." || $0 == ":" || ($0 >= "a" && $0 <= "f") || ($0 >= "A" && $0 <= "F") }) else { return nil }
-            guard unique.insert(value).inserted else { return nil }
-            return value
+        }
+
+        return results
+    }
+
+    private func normalizeAddressCandidate(_ raw: String) -> String? {
+        var value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return nil }
+
+        value = value.trimmingCharacters(in: CharacterSet(charactersIn: "[](){}<>\"'"))
+        if value.contains("#") {
+            value = String(value.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: true).first ?? "")
+        }
+        if value.contains("/") {
+            value = String(value.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: true).first ?? "")
+        }
+        if value.contains("?") {
+            value = String(value.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: true).first ?? "")
+        }
+        if value.contains("@") {
+            value = String(value.split(separator: "@", maxSplits: 1, omittingEmptySubsequences: true).last ?? "")
+        }
+
+        if value.hasPrefix("[") && value.contains("]") {
+            let endIndex = value.firstIndex(of: "]") ?? value.endIndex
+            let host = String(value[value.index(after: value.startIndex)..<endIndex])
+            let tail = String(value[endIndex...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !host.isEmpty else { return nil }
+            if tail.hasPrefix(":") {
+                let portString = String(tail.dropFirst())
+                guard let port = Int(portString), (1...65535).contains(port) else { return nil }
+            } else if !tail.isEmpty {
+                return nil
+            }
+            return host
+        }
+
+        if value.contains(":") {
+            let components = value.split(separator: ":", omittingEmptySubsequences: false)
+            if components.count > 2 {
+                // IPv6 without brackets: normalize to the bare IPv6 literal, dropping any trailing port-like token if present.
+                let candidate = String(value)
+                guard isValidIP(candidate) else { return nil }
+                return candidate
+            }
+            if components.count == 2 {
+                let host = String(components[0])
+                let portString = String(components[1])
+                guard !host.isEmpty, let port = Int(portString), (1...65535).contains(port) else {
+                    if isValidIP(value) { return value }
+                    return nil
+                }
+                return host
+            }
+        }
+
+        guard !value.contains("/") else { return nil }
+        guard isValidIP(value) else { return nil }
+        return value
+    }
+
+    private func isValidIP(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return false }
+        if trimmed.contains(":") {
+            let hexChars = CharacterSet(charactersIn: "0123456789abcdefABCDEF:")
+            return trimmed.count <= 45 && trimmed.unicodeScalars.allSatisfy({ hexChars.contains($0) || $0 == ":" })
+        }
+
+        let blocks = trimmed.split(separator: ".")
+        guard blocks.count == 4 else { return false }
+        return blocks.allSatisfy { block in
+            guard !block.isEmpty, block.count <= 3 else { return false }
+            guard let number = Int(block), (0...255).contains(number) else { return false }
+            return true
         }
     }
 }
@@ -349,7 +446,7 @@ struct ScanView: View {
         }
         .preferredColorScheme(.dark)
         .fileImporter(isPresented: $showImporter, allowedContentTypes: [.data, .text, .plainText, .commaSeparatedText, .item], allowsMultipleSelection: false) { result in
-            if case .success(let url) = result { model.importFile(url) }
+            if case .success(let urls) = result, let url = urls.first { model.importFile(url) }
         }
     }
 
