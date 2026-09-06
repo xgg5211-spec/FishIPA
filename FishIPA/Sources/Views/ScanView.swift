@@ -356,7 +356,8 @@ final class ScanViewModel: ObservableObject {
     private static func sampleTargets(from cidr: String) -> [AddressTarget] {
         let parts = cidr.split(separator: "/", maxSplits: 1).map(String.init)
         guard parts.count == 2, let prefix = Int(parts[1]), (0...128).contains(prefix) else { return [] }
-        if let ipv4 = parts[0].split(separator: ".").compactMap({ UInt8($0) }), ipv4.count == 4, prefix <= 32 {
+        let ipv4 = parts[0].split(separator: ".").compactMap { UInt8($0) }
+        if ipv4.count == 4, prefix <= 32 {
             let base = ipv4.reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
             let mask: UInt32 = prefix == 0 ? 0 : UInt32.max << UInt32(32 - prefix)
             let network = base & mask
